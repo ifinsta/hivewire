@@ -11,6 +11,7 @@ import base64
 import hashlib
 import json
 import os
+import signal
 import sqlite3
 import ssl
 import subprocess
@@ -60,11 +61,57 @@ def git(repo: str | Path, *args: str, check: bool = True) -> str:
 
 
 def run_argv(argv: list[str], cwd: str | Path, timeout: int = 300) -> dict:
+    """Owned local command with bounded capture and timed process cleanup.
+
+    This is a supervisor, not an OS sandbox. Parent processes cannot prove their
+    children have stopped on every platform; unknown descendants remain a risk.
+    """
     if not isinstance(argv, list) or not argv or not all(isinstance(v, str) and v for v in argv):
         raise Refusal("missing local execution profile", 400)
-    result = subprocess.run(argv, cwd=cwd, capture_output=True, timeout=timeout, check=False)
-    return {"exit_code": result.returncode, "output_sha256": digest(result.stdout + result.stderr),
-            "tail": (result.stdout + result.stderr)[-1600:].decode("utf-8", "replace")}
+    if not 1 <= timeout <= 900:
+        raise Refusal("execution timeout outside policy", 400)
+    with tempfile.TemporaryFile(mode="w+b") as output:
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        proc = subprocess.Popen(argv, cwd=cwd, stdout=output, stderr=subprocess.STDOUT,
+                                start_new_session=(os.name != "nt"), creationflags=flags)
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            if os.name != "nt":
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            else:
+                proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                if os.name != "nt":
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
+                proc.wait(timeout=5)
+        output.seek(0)
+        total = 0
+        sha256 = hashlib.sha256()
+        tail = bytearray()
+        while True:
+            chunk = output.read(65536)
+            if not chunk:
+                break
+            total += len(chunk)
+            sha256.update(chunk)
+            tail = (tail + chunk)[-1600:]
+        return {"exit_code": -1 if timed_out else proc.returncode,
+                "timed_out": timed_out, "output_bytes": total,
+                "output_sha256": sha256.hexdigest(),
+                "tail": tail.decode("utf-8", "replace")}
 
 
 class Store:
