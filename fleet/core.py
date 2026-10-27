@@ -143,6 +143,13 @@ class Store:
                     revoked INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS disabled_nodes(
                     node_id TEXT PRIMARY KEY, reason TEXT NOT NULL, disabled_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS node_components(
+                    node_id TEXT NOT NULL, name TEXT NOT NULL,
+                    state TEXT NOT NULL, updated REAL NOT NULL,
+                    PRIMARY KEY(node_id,name));
+                CREATE TABLE IF NOT EXISTS remote_receipts(
+                    job TEXT PRIMARY KEY, submission_id TEXT NOT NULL,
+                    state TEXT NOT NULL, updated REAL NOT NULL);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -211,10 +218,24 @@ class Store:
             con.execute("UPDATE worker_runs SET state=?,updated=?,detail=? WHERE job=?",
                         (state, time.time(), detail[:500], job))
 
-    def heartbeat(self, node: str, boot: str, sequence: int) -> dict:
+    def heartbeat(self, node: str, boot: str, sequence: int, components: list | None = None) -> dict:
         identifier(boot)
         if type(sequence) is not int or sequence < 1:
             raise Refusal("invalid heartbeat sequence", 400)
+        components = components if components is not None else []
+        if not isinstance(components, list) or len(components) > 32:
+            raise Refusal("node component inventory exceeds bounds", 400)
+        records = []
+        for item in components:
+            if not isinstance(item, dict):
+                raise Refusal("invalid component record", 400)
+            name = identifier(item.get("name"))
+            state = item.get("state")
+            if state not in ("ready", "running", "failed", "unknown", "offline"):
+                raise Refusal("unknown component state", 400)
+            records.append((node, name, state, time.time()))
+        if len(set(item[1] for item in records)) != len(records):
+            raise Refusal("duplicate component name", 400)
         with self.lock, self.db() as con:
             row = con.execute("SELECT boot_id,sequence FROM nodes WHERE id=?", (node,)).fetchone()
             if row is None:
@@ -223,6 +244,8 @@ class Store:
                 raise Refusal("stale heartbeat sequence")
             con.execute("UPDATE nodes SET last_seen=?,boot_id=?,sequence=? WHERE id=?",
                         (time.time(), boot, sequence, node))
+            for record in records:
+                con.execute("INSERT OR REPLACE INTO node_components VALUES (?,?,?,?)", record)
         return {"ok": True, "server_time": time.time()}
 
     def assign(self, job: str, node: str, profile: str, base: str, ttl: int) -> dict:
@@ -235,8 +258,12 @@ class Store:
         with self.lock, self.db() as con:
             if not con.execute("SELECT 1 FROM nodes WHERE id=?", (node,)).fetchone():
                 raise Refusal("node not enrolled", 404)
-            previous = con.execute("SELECT epoch,state FROM jobs WHERE id=?", (job,)).fetchone()
-            if previous and previous["state"] not in ("expired", "failed"):
+            if con.execute("SELECT 1 FROM disabled_nodes WHERE node_id=?", (node,)).fetchone():
+                raise Refusal("node is revoked")
+            previous = con.execute("SELECT epoch,state,lease_until FROM jobs WHERE id=?", (job,)).fetchone()
+            if previous and previous["state"] not in ("expired", "failed") and not (
+                previous["state"] in ("queued", "running") and previous["lease_until"] < time.time()
+            ):
                 raise Refusal("active assignment cannot be overwritten")
             epoch = previous["epoch"] + 1 if previous else 1
             con.execute("INSERT OR REPLACE INTO jobs VALUES (?,?,?,?,?,?,?,?)",
@@ -256,7 +283,7 @@ class Store:
             row = con.execute("SELECT * FROM jobs WHERE id=?", (job,)).fetchone()
             if not row or row["node"] != node or row["epoch"] != epoch:
                 raise Refusal("stale or unauthorized assignment")
-            if row["lease_until"] < time.time() or row["state"] in ("submitted", "integrated"):
+            if row["lease_until"] < time.time() or row["state"] in ("submitted", "integrated", "failed", "expired"):
                 raise Refusal("assignment is no longer executable")
             con.execute("UPDATE jobs SET state=?,updated=? WHERE id=?", (state, time.time(), job))
         return {"ok": True}
@@ -328,6 +355,8 @@ class Store:
             with self.db() as con:
                 if con.execute("SELECT 1 FROM disabled_nodes WHERE node_id=?", (row["id"],)).fetchone():
                     row["health"] = "revoked"
+                row["components"] = [dict(item) for item in con.execute(
+                    "SELECT name,state,updated FROM node_components WHERE node_id=? ORDER BY name", (row["id"],))]
         return data
 
     def spool(self, job: str, doc: dict) -> None:
@@ -342,6 +371,33 @@ class Store:
         with self.db() as con:
             return [json.loads(r["document"]) for r in con.execute(
                 "SELECT document FROM outbox WHERE delivered=0 ORDER BY job")]
+
+    def remote_ack(self, job: str, submission_id: str, state: str) -> None:
+        if state not in ("received", "integrating", "merged"):
+            raise Refusal("unexpected Master receipt state")
+        with self.lock, self.db() as con:
+            row = con.execute("SELECT submission_id,state FROM remote_receipts WHERE job=?", (job,)).fetchone()
+            if row and row["submission_id"] != submission_id:
+                raise Refusal("remote submission ID changed")
+            con.execute("INSERT OR REPLACE INTO remote_receipts VALUES (?,?,?,?)",
+                        (job, submission_id, state, time.time()))
+            if state == "merged":
+                con.execute("UPDATE worker_runs SET state='submitted',updated=? WHERE job=?", (time.time(), job))
+
+    def remote_pending(self) -> list[dict]:
+        with self.db() as con:
+            return [dict(row) for row in con.execute(
+                "SELECT * FROM remote_receipts WHERE state!='merged' ORDER BY updated LIMIT 100")]
+
+    def local_components(self) -> list[dict]:
+        with self.db() as con:
+            rows = con.execute("SELECT state,COUNT(*) AS count FROM worker_runs GROUP BY state").fetchall()
+        active = sum(int(row["count"]) for row in rows if row["state"] == "running")
+        failed = sum(int(row["count"]) for row in rows if row["state"] in ("failed", "unknown"))
+        return [
+            {"name": "hivewire-node", "state": "running"},
+            {"name": "worker-assignments", "state": "failed" if failed else "running" if active else "ready"},
+        ]
 
     def delivered(self, job: str) -> None:
         with self.lock, self.db() as con:
@@ -387,7 +443,8 @@ def serve(config: dict, store: Store) -> ThreadingHTTPServer:
                 if body.get("node_id") != identity:
                     raise Refusal("device identity mismatch", 403)
                 if self.path == "/v1/heartbeat":
-                    output = store.heartbeat(identity, body["boot_id"], body["sequence"])
+                    output = store.heartbeat(identity, body["boot_id"], body["sequence"],
+                                             body.get("components"))
                 elif self.path == "/v1/event":
                     output = store.event(identity, body["job"], body["epoch"], body["state"])
                 elif self.path == "/v1/submit":
@@ -448,6 +505,7 @@ class Client:
         results = []
         for entry in store.pending():
             result = self.request("/v1/submit", entry)
+            store.remote_ack(entry["job"], result["submission_id"], result["state"])
             store.delivered(entry["job"])
             results.append(result)
         return results
@@ -525,8 +583,12 @@ def run_worker_once(config: dict) -> list[dict]:
     seq_file = Path(config["state"] + ".seq")
     seq = int(seq_file.read_text()) + 1 if seq_file.exists() else 1
     seq_file.write_text(str(seq))
-    client.request("/v1/heartbeat", {"boot_id": boot, "sequence": seq})
+    client.request("/v1/heartbeat", {"boot_id": boot, "sequence": seq,
+                                    "components": store.local_components()})
     completed = client.flush(store)
+    for item in store.remote_pending():
+        ack = client.request("/v1/submissions/" + item["submission_id"])
+        store.remote_ack(item["job"], ack["submission_id"], ack["state"])
     jobs = client.request("/v1/jobs")["jobs"]
     # A delivered outbox is still finished work. Never reexecute the same job on the next poll.
     already = {item["job"] for item in store.pending()}
