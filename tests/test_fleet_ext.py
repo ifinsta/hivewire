@@ -181,7 +181,7 @@ class FleetSafety(unittest.TestCase):
         path = repo / ".git" / "swarm"
         path.mkdir()
         board = path / "swarm.db"
-        with sqlite3.connect(board) as con:
+        with closing(sqlite3.connect(board)) as con, con:
             con.execute("CREATE TABLE goals(id TEXT, state TEXT, closure TEXT)")
             con.execute("CREATE TABLE verification_runs(id TEXT, state TEXT, commit_sha TEXT)")
             con.execute("INSERT INTO goals VALUES (?,?,?)",
