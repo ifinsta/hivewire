@@ -162,6 +162,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS worker_reconciliations(
                     job TEXT NOT NULL, old_epoch INTEGER NOT NULL, old_state TEXT NOT NULL,
                     reason TEXT NOT NULL, at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS node_incidents(
+                    node TEXT PRIMARY KEY, state TEXT NOT NULL, first_at REAL NOT NULL,
+                    last_at REAL NOT NULL, resolved_at REAL);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -209,6 +212,28 @@ class Store:
             con.execute("UPDATE node_certificates SET revoked=1 WHERE node_id=?", (node,))
             con.execute("INSERT INTO node_certificates VALUES (?,?,0,?)", (fingerprint, node, time.time()))
             con.execute("DELETE FROM disabled_nodes WHERE node_id=?", (node,))
+
+    def sweep_liveness(self) -> list[dict]:
+        """Deduplicate silent-node incidents; never reinterpret silence as task failure."""
+        status = self.nodes()
+        with self.lock, self.db() as con:
+            for node in status:
+                health = node["health"]
+                current = con.execute(
+                    "SELECT state,resolved_at FROM node_incidents WHERE node=?", (node["id"],)
+                ).fetchone()
+                if health in ("suspect", "unreachable"):
+                    if current and current["state"] == health and current["resolved_at"] is None:
+                        con.execute("UPDATE node_incidents SET last_at=? WHERE node=?",
+                                    (time.time(), node["id"]))
+                    else:
+                        con.execute("INSERT OR REPLACE INTO node_incidents VALUES (?,?,?,?,NULL)",
+                                    (node["id"], health, time.time(), time.time()))
+                elif current and current["resolved_at"] is None:
+                    con.execute("UPDATE node_incidents SET resolved_at=? WHERE node=?",
+                                (time.time(), node["id"]))
+            return [dict(row) for row in con.execute(
+                "SELECT * FROM node_incidents ORDER BY last_at DESC LIMIT 1000")]
 
     def worker_state(self, job: str) -> dict | None:
         with self.db() as con:
@@ -844,6 +869,8 @@ def cli() -> int:
     p.add_argument("job")
     p.add_argument("--confirm-stopped", action="store_true")
     p.add_argument("--reason", required=True)
+    p = sub.add_parser("sweep")
+    p.add_argument("config")
     p = sub.add_parser("integrate")
     p.add_argument("config")
     p.add_argument("submission")
@@ -877,6 +904,8 @@ def cli() -> int:
         elif args.action == "reconcile-worker":
             store.worker_reconcile(args.job, args.reason, args.confirm_stopped)
             print(json.dumps({"reconciled": args.job}))
+        elif args.action == "sweep":
+            print(json.dumps(store.sweep_liveness(), indent=2))
         elif args.action == "nodes":
             print(json.dumps(store.nodes(), indent=2))
         elif args.action == "worker-once":
