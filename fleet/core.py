@@ -88,6 +88,14 @@ class Store:
                     prepared_sha TEXT, integrated_sha TEXT);
                 CREATE TABLE IF NOT EXISTS outbox(
                     job TEXT PRIMARY KEY, document TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS worker_runs(
+                    job TEXT PRIMARY KEY, epoch INTEGER NOT NULL, state TEXT NOT NULL,
+                    updated REAL NOT NULL, detail TEXT NOT NULL DEFAULT '');
+                CREATE TABLE IF NOT EXISTS node_certificates(
+                    fingerprint TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS disabled_nodes(
+                    node_id TEXT PRIMARY KEY, reason TEXT NOT NULL, disabled_at REAL NOT NULL);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -102,11 +110,57 @@ class Store:
             raise Refusal("invalid certificate fingerprint", 400)
         with self.lock, self.db() as con:
             con.execute("INSERT INTO nodes(id,fingerprint) VALUES (?,?)", (name, fingerprint))
+            con.execute("INSERT INTO node_certificates VALUES (?,?,0,?)", (fingerprint, name, time.time()))
 
     def identity(self, fingerprint: str) -> str | None:
         with self.db() as con:
-            row = con.execute("SELECT id FROM nodes WHERE fingerprint=?", (fingerprint,)).fetchone()
+            row = con.execute("""
+                SELECT c.node_id AS id FROM node_certificates c
+                LEFT JOIN disabled_nodes d ON d.node_id=c.node_id
+                WHERE c.fingerprint=? AND c.revoked=0 AND d.node_id IS NULL
+                """, (fingerprint,)).fetchone()
             return row["id"] if row else None
+
+    def revoke(self, node: str, reason: str) -> None:
+        identifier(node)
+        if not reason.strip():
+            raise Refusal("revocation reason required", 400)
+        with self.lock, self.db() as con:
+            if not con.execute("SELECT 1 FROM nodes WHERE id=?", (node,)).fetchone():
+                raise Refusal("unknown node", 404)
+            con.execute("INSERT OR REPLACE INTO disabled_nodes VALUES (?,?,?)", (node, reason[:240], time.time()))
+            con.execute("UPDATE node_certificates SET revoked=1 WHERE node_id=?", (node,))
+
+    def rotate_certificate(self, node: str, fingerprint: str) -> None:
+        identifier(node)
+        if len(fingerprint) != 64 or any(c not in HEX for c in fingerprint):
+            raise Refusal("invalid certificate fingerprint", 400)
+        with self.lock, self.db() as con:
+            if not con.execute("SELECT 1 FROM nodes WHERE id=?", (node,)).fetchone():
+                raise Refusal("unknown node", 404)
+            con.execute("UPDATE node_certificates SET revoked=1 WHERE node_id=?", (node,))
+            con.execute("INSERT INTO node_certificates VALUES (?,?,0,?)", (fingerprint, node, time.time()))
+            con.execute("DELETE FROM disabled_nodes WHERE node_id=?", (node,))
+
+    def worker_state(self, job: str) -> dict | None:
+        with self.db() as con:
+            row = con.execute("SELECT * FROM worker_runs WHERE job=?", (job,)).fetchone()
+            return dict(row) if row else None
+
+    def worker_claim(self, job: str, epoch: int) -> None:
+        with self.lock, self.db() as con:
+            row = con.execute("SELECT * FROM worker_runs WHERE job=?", (job,)).fetchone()
+            if row:
+                raise Refusal("local execution already exists; reconcile instead of restarting")
+            con.execute("INSERT INTO worker_runs VALUES (?,?,?,?,?)",
+                        (job, epoch, "running", time.time(), ""))
+
+    def worker_finish(self, job: str, state: str, detail: str = "") -> None:
+        if state not in ("failed", "ready_to_submit", "submitted", "unknown"):
+            raise Refusal("invalid local worker completion state", 400)
+        with self.lock, self.db() as con:
+            con.execute("UPDATE worker_runs SET state=?,updated=?,detail=? WHERE job=?",
+                        (state, time.time(), detail[:500], job))
 
     def heartbeat(self, node: str, boot: str, sequence: int) -> dict:
         identifier(boot)
@@ -205,6 +259,15 @@ class Store:
                 raise Refusal("submission not found", 404)
             return {"submission_id": sid, "state": row["state"], "integrated_sha": row["integrated_sha"]}
 
+    def jobs(self) -> list[dict]:
+        with self.db() as con:
+            return [dict(r) for r in con.execute("SELECT * FROM jobs ORDER BY updated DESC LIMIT 1000")]
+
+    def submissions(self) -> list[dict]:
+        with self.db() as con:
+            return [dict(r) for r in con.execute(
+                "SELECT id,job,node,epoch,head_sha,state,integrated_sha FROM submissions ORDER BY rowid DESC LIMIT 1000")]
+
     def nodes(self) -> list[dict]:
         with self.db() as con:
             data = [dict(row) for row in con.execute("SELECT id,last_seen,boot_id,sequence FROM nodes")]
@@ -213,6 +276,9 @@ class Store:
             age = now - row["last_seen"] if row["last_seen"] else None
             row["health"] = ("unknown" if age is None else "online" if age < 30 else
                              "suspect" if age < 90 else "unreachable")
+            with self.db() as con:
+                if con.execute("SELECT 1 FROM disabled_nodes WHERE node_id=?", (row["id"],)).fetchone():
+                    row["health"] = "revoked"
         return data
 
     def spool(self, job: str, doc: dict) -> None:
@@ -350,14 +416,17 @@ def execute_one(client: Client, store: Store, job: dict, profiles: dict) -> dict
         raise Refusal("worker checkout base differs from the assignment")
     if git(repo, "status", "--porcelain"):
         raise Refusal("worker checkout is dirty")
+    store.worker_claim(job["id"], job["epoch"])
     client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "running"})
     result = run_argv(profile["run_argv"], repo, int(profile.get("timeout", 300)))
     if result["exit_code"]:
         client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "failed"})
+        store.worker_finish(job["id"], "failed", "execution returned nonzero")
         return {"job": job["id"], "state": "failed", "run": result}
     check = run_argv(profile["verify_argv"], repo, int(profile.get("timeout", 300)))
     if check["exit_code"] or git(repo, "status", "--porcelain"):
         client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "failed"})
+        store.worker_finish(job["id"], "failed", "local verification failed")
         return {"job": job["id"], "state": "verification_failed", "check": check}
     head = sha(git(repo, "rev-parse", "HEAD"))
     anc = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", current_base, head],
@@ -374,6 +443,7 @@ def execute_one(client: Client, store: Store, job: dict, profiles: dict) -> dict
     doc = {"job": job["id"], "epoch": job["epoch"], "head_sha": head,
            "base_sha": current_base, "bundle": encoded, "proof": proof}
     store.spool(job["id"], doc)
+    store.worker_finish(job["id"], "ready_to_submit", head)
     # Durable outbox is written before attempting the network send.
     return {"job": job["id"], "state": "ready_to_submit", "head": head}
 
@@ -393,10 +463,11 @@ def run_worker_once(config: dict) -> list[dict]:
     client.request("/v1/heartbeat", {"boot_id": boot, "sequence": seq})
     completed = client.flush(store)
     jobs = client.request("/v1/jobs")["jobs"]
+    # A delivered outbox is still finished work. Never reexecute the same job on the next poll.
     already = {item["job"] for item in store.pending()}
     output = [{"delivered": item} for item in completed]
     for job in jobs:
-        if job["id"] in already:
+        if job["id"] in already or store.worker_state(job["id"]):
             continue
         outcome = execute_one(client, store, job, config["profiles"])
         output.append(outcome)
@@ -500,6 +571,14 @@ def cli() -> int:
     p.add_argument("node")
     p.add_argument("profile")
     p.add_argument("--ttl", type=int, default=3600)
+    p = sub.add_parser("revoke")
+    p.add_argument("config")
+    p.add_argument("node")
+    p.add_argument("--reason", required=True)
+    p = sub.add_parser("rotate")
+    p.add_argument("config")
+    p.add_argument("node")
+    p.add_argument("certificate")
     p = sub.add_parser("integrate")
     p.add_argument("config")
     p.add_argument("submission")
@@ -517,6 +596,12 @@ def cli() -> int:
         elif args.action == "assign":
             base = sha(git(config["repository"], "rev-parse", "refs/heads/" + config.get("branch", "main")))
             print(json.dumps(store.assign(args.job, args.node, args.profile, base, args.ttl)))
+        elif args.action == "revoke":
+            store.revoke(args.node, args.reason)
+            print(json.dumps({"revoked": args.node}))
+        elif args.action == "rotate":
+            store.rotate_certificate(args.node, cert_fingerprint(args.certificate))
+            print(json.dumps({"rotated": args.node}))
         elif args.action == "integrate":
             print(json.dumps(integrate(store, config, args.submission)))
         elif args.action == "nodes":
