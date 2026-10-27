@@ -74,6 +74,37 @@ class FleetSafety(unittest.TestCase):
         with self.assertRaises(Refusal):
             again.remote_ack("job", "changed", "received")
 
+    def test_cross_node_message_durable_and_idempotent(self):
+        self.store.add_node("joseph", "b" * 64)
+        result = self.store.send_message("felix", "joseph", "unique-key", "handoff", "Test complete")
+        self.assertFalse(result["duplicate"])
+        self.assertTrue(self.store.send_message("felix", "joseph", "unique-key",
+                                                "handoff", "Test complete")["duplicate"])
+        with self.assertRaises(Refusal):
+            self.store.send_message("felix", "joseph", "unique-key",
+                                    "handoff", "Changed content")
+        received = self.store.inbox("joseph")
+        self.assertEqual(received[0]["body"], "Test complete")
+        local = Store(str(self.root / "joseph.sqlite"))
+        local.receive_local(received[0])
+        local.receive_local(received[0])
+        self.assertEqual(len(local.local_inbox()), 1)
+        self.store.ack_message("joseph", result["message_id"])
+        self.store.ack_message("joseph", result["message_id"])
+        self.assertEqual(self.store.inbox("joseph"), [])
+
+    def test_uncertain_worker_release_requires_operator_attestation(self):
+        self.store.worker_claim("job", 1)
+        with self.assertRaises(Refusal):
+            self.store.worker_reconcile("job", "machine restarted", False)
+        with self.assertRaises(Refusal):
+            self.store.worker_reconcile("job", "short", True)
+        self.store.worker_reconcile("job", "Operator inspected machine and confirmed no process", True)
+        self.assertIsNone(self.store.worker_state("job"))
+        with self.store.db() as con:
+            row = con.execute("SELECT * FROM worker_reconciliations").fetchone()
+            self.assertEqual(row["old_epoch"], 1)
+
     def test_master_denies_unisolated_verification(self):
         with self.assertRaises(Refusal):
             verify_on_master({"gate_argv": []}, self.root, [sys.executable, "-c", "print(1)"])
