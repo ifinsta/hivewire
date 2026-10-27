@@ -30,4 +30,4 @@ jobs:
           python -m pip install --quiet ruff
           python -m ruff check fleet tests/test_fleet*.py
       - name: Execute network and Git integration acceptance
-        run: python -m unittest discover -s tests -p "test_fleet.py" -v
+        run: python -m unittest discover -s tests -p "test_fleet*.py" -v
