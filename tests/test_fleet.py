@@ -144,6 +144,18 @@ class LiveTransportTests(unittest.TestCase):
             old = json.loads(con.execute("SELECT document FROM outbox").fetchone()["document"])
         self.assertEqual(Client(self.worker_config).request("/v1/submit", old)["state"], "merged")
 
+    def test_tls_cross_node_message_acknowledgement(self) -> None:
+        client = Client(self.worker_config)
+        msg = client.request("/v1/message", {
+            "recipient": "felix", "key": "same-job-message",
+            "kind": "status", "body": "Local verification completed"
+        })
+        self.assertEqual(msg["duplicate"], False)
+        inbox = client.request("/v1/inbox")["messages"]
+        self.assertEqual(inbox[0]["id"], msg["message_id"])
+        client.request("/v1/ack", {"message_id": msg["message_id"]})
+        self.assertEqual(client.request("/v1/inbox")["messages"], [])
+
     def test_unregistered_client_and_out_of_scope_refused(self) -> None:
         rogue = dict(self.worker_config, node_id="unregistered",
                      cert=str(self.certs / "unregistered.crt"),
