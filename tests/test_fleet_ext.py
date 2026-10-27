@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import sqlite3
 import subprocess
 import sys
@@ -204,10 +205,10 @@ class FleetSafety(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with http.client.HTTPConnection("127.0.0.1", port, timeout=3) as client:
+            with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=3)) as client:
                 client.request("GET", "/api/state")
                 self.assertEqual(client.getresponse().status, 403)
-            with http.client.HTTPConnection("127.0.0.1", port, timeout=3) as client:
+            with closing(http.client.HTTPConnection("127.0.0.1", port, timeout=3)) as client:
                 client.request("GET", "/api/state",
                                headers={"X-Hivewire-Operator": "test-only-strong-operator-token-1"})
                 response = client.getresponse()
