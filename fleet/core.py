@@ -451,6 +451,13 @@ def execute_one(client: Client, store: Store, job: dict, profiles: dict) -> dict
     proof = {"verified": True, "commit": head, "run": result,
              "local_check": check, "profile": job["profile"],
              "note": "Local profile assertions; independently reverified by Master"}
+    if profile.get("hivewire_goal"):
+        from .evidence import EvidenceRefusal, verify_local_goal
+        try:
+            proof["hivewire_goal"] = verify_local_goal(repo, profile["hivewire_goal"], head)
+        except EvidenceRefusal as exc:
+            store.worker_finish(job["id"], "failed", "Hivewire local closure missing")
+            raise Refusal(str(exc)) from exc
     doc = {"job": job["id"], "epoch": job["epoch"], "head_sha": head,
            "base_sha": current_base, "bundle": encoded, "proof": proof}
     store.spool(job["id"], doc)
@@ -530,6 +537,12 @@ def integrate(store: Store, config: dict, sid: str) -> dict:
         if job["epoch"] != sub["epoch"] or job["node"] != sub["node"]:
             raise Refusal("superseded submission")
         policy = config["profiles"][job["profile"]]
+        if policy.get("requires_hivewire_goal"):
+            from .evidence import EvidenceRefusal, validate_remote_claim
+            try:
+                validate_remote_claim(json.loads(sub["proof_json"]), policy["requires_hivewire_goal"], sub["head_sha"])
+            except EvidenceRefusal as exc:
+                raise Refusal(str(exc)) from exc
         bundle = Path(config["artifact_dir"]) / (sid + ".bundle")
         if not bundle.is_file() or digest(bundle.read_bytes()) != sub["bundle_sha"]:
             raise Refusal("missing or corrupted staged bundle")
