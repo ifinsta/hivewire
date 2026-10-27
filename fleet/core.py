@@ -130,6 +130,8 @@ class Store:
                 raise Refusal("unknown node", 404)
             con.execute("INSERT OR REPLACE INTO disabled_nodes VALUES (?,?,?)", (node, reason[:240], time.time()))
             con.execute("UPDATE node_certificates SET revoked=1 WHERE node_id=?", (node,))
+            con.execute("UPDATE jobs SET lease_until=?,state='expired' WHERE node=? AND state IN ('queued','running')",
+                        (time.time(), node))
 
     def rotate_certificate(self, node: str, fingerprint: str) -> None:
         identifier(node)
@@ -418,12 +420,21 @@ def execute_one(client: Client, store: Store, job: dict, profiles: dict) -> dict
         raise Refusal("worker checkout is dirty")
     store.worker_claim(job["id"], job["epoch"])
     client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "running"})
-    result = run_argv(profile["run_argv"], repo, int(profile.get("timeout", 300)))
+    remaining = int(job["lease_until"] - time.time() - 2)
+    if remaining < 1:
+        store.worker_finish(job["id"], "unknown", "lease expired before starting")
+        raise Refusal("lease expired before execution")
+    timeout = min(int(profile.get("timeout", 300)), remaining)
+    result = run_argv(profile["run_argv"], repo, timeout)
     if result["exit_code"]:
         client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "failed"})
         store.worker_finish(job["id"], "failed", "execution returned nonzero")
         return {"job": job["id"], "state": "failed", "run": result}
-    check = run_argv(profile["verify_argv"], repo, int(profile.get("timeout", 300)))
+    remaining = int(job["lease_until"] - time.time() - 2)
+    if remaining < 1:
+        store.worker_finish(job["id"], "unknown", "lease expired before verification")
+        raise Refusal("lease expired before verification")
+    check = run_argv(profile["verify_argv"], repo, min(int(profile.get("timeout", 300)), remaining))
     if check["exit_code"] or git(repo, "status", "--porcelain"):
         client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "failed"})
         store.worker_finish(job["id"], "failed", "local verification failed")
@@ -479,6 +490,30 @@ def run_worker_once(config: dict) -> list[dict]:
 def cert_fingerprint(path: str) -> str:
     pem = Path(path).read_text()
     return digest(ssl.PEM_cert_to_DER_cert(pem))
+
+
+def verify_on_master(policy: dict, checkout: Path, gate: list[str]) -> dict:
+    """Execute an approved verification gate. Default refuse unisolated source execution."""
+    verifier = policy.get("verifier")
+    if verifier == "isolated_docker":
+        image = policy.get("docker_image", "")
+        # Image digests must be pinned by the operator. Never trust tags or branch content.
+        if "@sha256:" not in image or not image.split("@sha256:")[-1].isalnum():
+            raise Refusal("verifier image must be pinned by digest")
+        if not isinstance(gate, list) or not gate or any(not isinstance(v, str) for v in gate):
+            raise Refusal("invalid Master gate")
+        command = [
+            "docker", "run", "--rm", "--network", "none", "--read-only",
+            "--cpus", "1", "--memory", "1024m", "--pids-limit", "128",
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+            "--user", "65534:65534", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m",
+            "--mount", f"type=bind,src={checkout},dst=/workspace,readonly",
+            "--workdir", "/workspace", image, *gate
+        ]
+        return run_argv(command, checkout, timeout=min(int(policy.get("gate_timeout", 300)), 900))
+    if verifier == "lab_unsafe" and policy.get("allow_unsafe_local_verifier_for_tests") is True:
+        return run_argv(gate, checkout, timeout=min(int(policy.get("gate_timeout", 300)), 900))
+    raise Refusal("Master verifier must be configured as isolated_docker; local mode is test-only")
 
 
 def integrate(store: Store, config: dict, sid: str) -> dict:
@@ -537,7 +572,7 @@ def integrate(store: Store, config: dict, sid: str) -> dict:
             if not gates:
                 raise Refusal("Master gate policy required")
             for gate in gates:
-                result = run_argv(gate, checkout)
+                result = verify_on_master(policy, checkout, gate)
                 if result["exit_code"]:
                     raise Refusal("Master gate failed: " + result["tail"][-400:])
             if git(checkout, "status", "--porcelain"):
