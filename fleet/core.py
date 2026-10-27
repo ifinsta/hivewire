@@ -11,7 +11,6 @@ import base64
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import ssl
 import subprocess
@@ -254,7 +253,7 @@ def serve(config: dict, store: Store) -> ThreadingHTTPServer:
                 if identity is None:
                     raise Refusal("certificate is not enrolled", 403)
                 if self.command == "GET":
-                    path, _, query = self.path.partition("?")
+                    path = self.path.partition("?")[0]
                     if path == "/v1/jobs":
                         self.reply(200, {"protocol": PROTOCOL, "jobs": store.work(identity)})
                     elif path.startswith("/v1/submissions/"):
@@ -361,9 +360,6 @@ def execute_one(client: Client, store: Store, job: dict, profiles: dict) -> dict
         client.request("/v1/event", {"job": job["id"], "epoch": job["epoch"], "state": "failed"})
         return {"job": job["id"], "state": "verification_failed", "check": check}
     head = sha(git(repo, "rev-parse", "HEAD"))
-    if head == current_base or git(repo, "merge-base", "--is-ancestor", current_base, head, check=False):
-        # merge-base returns no stdout; inspect actual result below.
-        pass
     anc = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", current_base, head],
                          capture_output=True, check=False)
     if head == current_base or anc.returncode != 0:
