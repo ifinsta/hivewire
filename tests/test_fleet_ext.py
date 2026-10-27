@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -118,7 +119,7 @@ class FleetSafety(unittest.TestCase):
     def test_incident_deduplication_and_resolution(self):
         self.store.heartbeat("felix", "boot", 1)
         with self.store.db() as con:
-            con.execute("UPDATE nodes SET last_seen=? WHERE id='felix'", (0,))
+            con.execute("UPDATE nodes SET last_seen=? WHERE id='felix'", (time.time() - 120,))
         first = self.store.sweep_liveness()[0]
         self.assertEqual(first["state"], "unreachable")
         second = self.store.sweep_liveness()[0]
