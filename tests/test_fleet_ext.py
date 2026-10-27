@@ -40,6 +40,12 @@ class FleetSafety(unittest.TestCase):
         self.store.rotate_certificate("felix", "d" * 64)
         self.assertEqual(self.store.identity("d" * 64), "felix")
 
+    def test_upgrade_backfills_pinned_node_identities(self):
+        with self.store.db() as con:
+            con.execute("DELETE FROM node_certificates WHERE node_id='felix'")
+        upgraded = Store(self.state)
+        self.assertEqual(upgraded.identity("a" * 64), "felix")
+
     def test_epoch_fencing_and_expired_reassignment(self):
         first = self.store.assign("job", "felix", "frontend", "a" * 40, 60)
         self.assertEqual(first["epoch"], 1)
@@ -70,6 +76,7 @@ class FleetSafety(unittest.TestCase):
         self.assertEqual(len(self.store.remote_pending()), 1)
         again = Store(self.state)
         again.remote_ack("job", "1234", "merged")
+        again.remote_ack("job", "1234", "received")  # Out-of-order ACK cannot regress success.
         self.assertEqual(again.remote_pending(), [])
         self.assertEqual(again.worker_state("job")["state"], "submitted")
         with self.assertRaises(Refusal):
@@ -90,6 +97,8 @@ class FleetSafety(unittest.TestCase):
         local.receive_local(received[0])
         local.receive_local(received[0])
         self.assertEqual(len(local.local_inbox()), 1)
+        with self.assertRaises(Refusal):
+            local.receive_local({**received[0], "body": "modified replay"})
         self.store.ack_message("joseph", result["message_id"])
         self.store.ack_message("joseph", result["message_id"])
         self.assertEqual(self.store.inbox("joseph"), [])
@@ -117,6 +126,9 @@ class FleetSafety(unittest.TestCase):
         self.store.heartbeat("felix", "boot", 2)
         last = self.store.sweep_liveness()[0]
         self.assertIsNotNone(last["resolved_at"])
+        with self.store.db() as con:
+            events = con.execute("SELECT event FROM node_incident_events ORDER BY id").fetchall()
+            self.assertEqual([r["event"] for r in events], ["raised", "resolved"])
 
     def test_browser_requires_approved_staging_origin(self):
         with self.assertRaises(ValueError):
