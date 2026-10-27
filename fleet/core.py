@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock, Thread
 
 PROTOCOL = "hwp/1"
 MAX_BODY = 16 * 1024 * 1024
@@ -234,6 +234,11 @@ class Store:
                                 (time.time(), node["id"]))
             return [dict(row) for row in con.execute(
                 "SELECT * FROM node_incidents ORDER BY last_at DESC LIMIT 1000")]
+
+    def incidents(self) -> list[dict]:
+        with self.db() as con:
+            return [dict(row) for row in con.execute(
+                "SELECT * FROM node_incidents ORDER BY last_at DESC LIMIT 100")]
 
     def worker_state(self, job: str) -> dict | None:
         with self.db() as con:
@@ -880,8 +885,21 @@ def cli() -> int:
     try:
         if args.action == "serve":
             service = serve(config, store)
-            print(json.dumps({"listening": service.server_address}))
-            service.serve_forever()
+            stop = Event()
+            def watch_liveness():
+                while not stop.wait(15):
+                    store.sweep_liveness()
+            watcher = Thread(target=watch_liveness, daemon=True)
+            watcher.start()
+            print(json.dumps({"listening": service.server_address}), flush=True)
+            try:
+                service.serve_forever()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                stop.set()
+                service.server_close()
+                watcher.join(timeout=2)
         elif args.action == "enroll":
             store.add_node(args.node, cert_fingerprint(args.certificate))
             print(json.dumps({"enrolled": args.node}))
