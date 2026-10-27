@@ -59,6 +59,9 @@ The Master is not an HTTP traffic proxy. Distributed load generators send test t
 | POST | `/v1/event` | Record `running` or `failed` for the currently leased assignment |
 | POST | `/v1/submit` | Idempotently stage an immutable Git bundle and local gate evidence |
 | GET | `/v1/submissions/{id}` | Reconcile receipt, including post-integration result |
+| POST | `/v1/message` | Publish a bounded, typed informational cross-node message |
+| GET | `/v1/inbox` | Fetch only messages addressed to authenticated node |
+| POST | `/v1/ack` | Record durable receiver acknowledgement |
 
 Transport is HTTPS over TLS 1.3 using client certificates and an independently configured CA. The server validates both chain and SHA-256 DER fingerprint against its registered nodes. Node ID in body must match the authenticated identity. Hostname identity is checked by standard TLS verification on the client.
 
@@ -87,7 +90,7 @@ Crash windows: if Git push succeeded but DB acknowledgement did not, a persisted
 
 ### Verification evidence model
 
-Current pilot proof includes exact commit, local run exit code, SHA-256 of combined stdout/stderr, verification command result, profile and bounded tail. This is a locally supplied claim, **not proof of local Hivewire task/goal acceptance**. Before production, export signed or authenticated receipts for local agent execution, integration, test definitions, platform/capability context, source revision, stdout completeness, machine identity and policy digest. Master must re-run independent gates and distinguish blocked/unknown from passed.
+Pilot proof includes exact commit, local run exit code, SHA-256 of combined stdout/stderr, verification command result, profile and bounded tail. If the local profile specifies `hivewire_goal`, the worker now opens the native Hivewire SQLite board read-only and refuses submission unless the named goal is closed with a passed verification receipt for the exact submitted commit. Master policy can require that claim with `requires_hivewire_goal`. A remote receipt remains an authenticated **node claim**, not Master proof; Master independently re-runs isolated gates. A comprehensive signed/native task-level proof bundle and reviewer policy digest remain follow-on release gates.
 
 ## 5. Operator setup (lab only)
 
@@ -109,6 +112,8 @@ Prerequisites: Python 3.11+, Git, OpenSSL or equivalent PKI tooling. Four author
   "profiles": {
     "browser-tests": {
       "allowed_paths": ["tests", "src"],
+      "verifier": "isolated_docker",
+      "docker_image": "python@sha256:<approved-64-hex-image-digest>",
       "gate_argv": [["python", "-m", "unittest", "discover", "-s", "tests"]]
     }
   }
@@ -157,7 +162,7 @@ python -m fleet worker-once felix.json
 python -m fleet integrate master.json <submission-id>
 ```
 
-The worker currently runs one poll/execution/flush cycle, not a continuously supervised daemon. Schedule future cycles only after adding a local supervisor and durable lease watchdog. Never point the pilot at a production repository or real customer data.
+The `worker-once` command runs one poll/execution/flush cycle. `python -m fleet.service worker.json --interval 15` provides a continuously polled worker with an exclusive lock and bounded reconnection backoff. The durable worker_runs ledger prevents a previously claimed assignment from being silently rerun after a crash. A lost process may remain uncertain; `reconcile-worker` requires explicit operator cessation attestation and retains a reconciliation record. A worker process runner bounds output capture and attempts to terminate its owned process group on timeout; it is **not** full OS isolation. Never point the pilot at a production repository or real customer data.
 
 ## 6. High-concurrency traffic testing
 
@@ -198,8 +203,53 @@ Test source: `tests/test_fleet.py`. It covers HWP/1 liveness and expiry plus a r
 
 ### Honest release blockers
 
-The current implementation is not safe for arbitrary untrusted code on Douglas Machine. Master gates run in a temporary checkout but without a hardened sandbox; source and gate execution must move to a dedicated isolated verification machine for production. TLS and identity provisioning remain manual. The current Master serves as a single point of failure; its SQLite connection handling, concurrency and bundle-transfer approach require hardening and load testing. Work is profile-driven rather than fully orchestrated from Hivewire's native global goal engine. Before declaring the feature completely integrated, implement and verify Phases B–F.
+The current implementation is not safe for arbitrary untrusted code on Douglas Machine. Master gates now default to **refusal** unless a verifier profile is configured. The `isolated_docker` backend uses a pinned image digest, no networking, a read-only checkout mount, dropped capabilities, a non-root identity and resource limits. Its security is not independently certified. The `lab_unsafe` mode is deliberately gated by `allow_unsafe_local_verifier_for_tests` and must not be used for untrusted source. Additional isolation, Docker daemon permissions and host escape testing remain necessary for production. TLS and identity provisioning remain manual. The current Master serves as a single point of failure; its SQLite connection handling, concurrency and bundle-transfer approach require hardening and load testing. Work is profile-driven rather than fully orchestrated from Hivewire's native global goal engine. Before declaring the feature completely integrated, implement and verify Phases B–F.
 
 ## 9. Product positioning
 
 HWP/1 should become a native, evidence-centered Hivewire fleet protocol: agents coordinate locally; nodes are independently authenticated; the global Master schedules work and merges only independently verified results. Jani remains an optional agent and telemetry source, never an implicit authority grant. Once hardened, the same foundation supports distributed engineering, regression testing, traffic simulation and remote diagnostics.
+
+## 10. Hardening progress and remaining gates (updated 2026-10-27)
+
+### Implemented on the feature branch
+
+- Worker `worker_runs` ledger: a restart or duplicate poll never blindly reruns a previously claimed job. Explicit recovery logs human cessation attestation; unattended replays remain refused.
+- Master retains node components, individual source/status receipts, and deduplicated suspect/unreachable incidents. An offline node is *not* presumed to have stopped its OS processes.
+- Certificate rotation, node revocation and active-lease expiry; credential issuance/revocation remains operator-managed, not enterprise PKI.
+- Reliable typed informational messages, durable local inbox and ACK after persistence. Network messages never authorize arbitrary shell commands and are **not** yet injected into existing local Hivewire inboxes.
+- Local native Hivewire goal closure verification can be enabled per worker profile; Master separately requires the claim if configured.
+- Master verification defaults to refusal unless Docker isolation is configured, with a restricted lab mode for synthetic CI fixtures.
+- Loopback-only operator console `python -m fleet.dashboard master.json` requires the `HWP_OPERATOR_TOKEN` environment variable (minimum 24 characters). Do not publish it on the internet.
+- Linux service templates at `fleet/deploy/hivewire-master.service` and `fleet/deploy/hivewire-worker.service` are examples only; adjust users, repository mounts and ACLs before installing.
+- Explicitly authorized Playwright and k6 workload samples in `fleet/workloads/`. They are opt-in test profiles, **not** proof of a 100,000-session fleet or production-browser acceptance.
+
+### Additional operator commands
+
+```sh
+python -m fleet revoke master.json felix --reason "Revoke lost device"
+python -m fleet rotate master.json felix /srv/hwp/pki/felix-new.crt
+python -m fleet message master.json felix "Please inspect local verification" --kind question
+python -m fleet sweep master.json
+
+# On Felix after independently confirming uncertain execution has stopped:
+python -m fleet reconcile-worker felix.json job-123 \
+  --confirm-stopped --reason "Operator confirmed process tree stopped and checked preserved work"
+
+# Run node supervision as a service; avoid overlapping invocations:
+python -m fleet.service felix.json --interval 15
+
+# Loopback viewer — token must be set securely in environment:
+python -m fleet.dashboard master.json --port 8765
+```
+
+### Additional production blockers
+
+1. **Unattended end-to-end real-machine proof** on Douglas, Felix, Joseph and Alex across distinct networks, including outage/reconnect and OS-specific process/permission behavior.
+2. **Security**: PKI enrollment automation, scoped revocation distribution, certificate-expiry/rotation drills, file and network sandbox validation, strong hardware/device identity and remote audit integrity.
+3. **Distributed consensus and HA**: one Master is currently authoritative; no automatic election or HA takeover. Cross-process Master ref update and SQLite durability require failure-injection under concurrent writers.
+4. **Native integration**: full round-trip of per-agent Hivewire task ownership, reviewer clearance, cross-node inbox, merge event lineage and local goal closure into Master acceptance. The pilot's optional native closed-goal check is only a subset.
+5. **High-volume transports**: protocol currently uses HTTPS/JSON with base64 Git bundles; future HWP/1 revisions should use chunked artifact exchange, backpressure, quotas and measurements under network loss.
+6. **Media**: live screen sharing requires a separately authorized WebRTC capture pipeline and OS-native user consent; no unattended desktop capture is implemented.
+7. **Traffic generation**: Playwright/k6 workload samples require an authorized staging target, synthetic test users, resource calibration and explicit campaign limits; no 100k benchmark has been run.
+
+**Do not merge the draft PR into main solely because focused synthetic tests pass.** Keep the implementation opt-in until the relevant multi-platform CI, security gates and operator-reviewed deployment evidence are complete.
