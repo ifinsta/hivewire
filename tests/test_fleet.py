@@ -71,6 +71,8 @@ class LiveTransportTests(unittest.TestCase):
             "key": str(self.certs / "server.key"),
             "profiles": {"frontend": {
                 "allowed_paths": ["app.txt"],
+                "verifier": "lab_unsafe",
+                "allow_unsafe_local_verifier_for_tests": True,
                 "gate_argv": [[sys.executable, "-c",
                                "from pathlib import Path; assert Path('app.txt').read_text() == 'optimized\\n'"]]
             }}
