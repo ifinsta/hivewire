@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - "fleet/**"
-      - "tests/test_fleet.py"
+      - "tests/test_fleet*.py"
       - ".github/workflows/fleet-smoke.yml"
   workflow_dispatch:
 
@@ -24,6 +24,6 @@ jobs:
       - name: Lint new fleet modules
         run: |
           python -m pip install --quiet ruff
-          python -m ruff check fleet tests/test_fleet.py
+          python -m ruff check fleet tests/test_fleet*.py
       - name: Execute network and Git integration acceptance
         run: python -m unittest discover -s tests -p "test_fleet.py" -v
