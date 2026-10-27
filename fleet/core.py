@@ -150,6 +150,18 @@ class Store:
                 CREATE TABLE IF NOT EXISTS remote_receipts(
                     job TEXT PRIMARY KEY, submission_id TEXT NOT NULL,
                     state TEXT NOT NULL, updated REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS node_messages(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sender TEXT NOT NULL, recipient TEXT NOT NULL,
+                    idempotency_key TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL,
+                    created REAL NOT NULL, expires REAL NOT NULL, acknowledged REAL,
+                    UNIQUE(sender,idempotency_key));
+                CREATE TABLE IF NOT EXISTS local_messages(
+                    id INTEGER PRIMARY KEY, sender TEXT NOT NULL, kind TEXT NOT NULL,
+                    body TEXT NOT NULL, stored_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS worker_reconciliations(
+                    job TEXT NOT NULL, old_epoch INTEGER NOT NULL, old_state TEXT NOT NULL,
+                    reason TEXT NOT NULL, at REAL NOT NULL);
             """)
 
     def db(self) -> sqlite3.Connection:
@@ -202,6 +214,79 @@ class Store:
         with self.db() as con:
             row = con.execute("SELECT * FROM worker_runs WHERE job=?", (job,)).fetchone()
             return dict(row) if row else None
+
+    def worker_reconcile(self, job: str, reason: str, confirm_stopped: bool) -> None:
+        """Human-attested release; never assume a stale PID establishes cessation."""
+        identifier(job)
+        if not confirm_stopped or len(reason.strip()) < 12:
+            raise Refusal("explicit cessation confirmation and detailed reason required", 400)
+        with self.lock, self.db() as con:
+            previous = con.execute("SELECT epoch,state FROM worker_runs WHERE job=?", (job,)).fetchone()
+            if not previous:
+                raise Refusal("no local run to reconcile", 404)
+            con.execute("INSERT INTO worker_reconciliations VALUES (?,?,?,?,?)",
+                        (job, previous["epoch"], previous["state"], reason[:500], time.time()))
+            # Keep old results in the outbox, but stop stale uploads after attestation.
+            con.execute("UPDATE outbox SET delivered=2 WHERE job=? AND delivered=0", (job,))
+            con.execute("DELETE FROM worker_runs WHERE job=?", (job,))
+
+    def send_message(self, sender: str, recipient: str, key: str, kind: str, body: str) -> dict:
+        for value in (sender, recipient, key):
+            identifier(value)
+        if kind not in ("question", "status", "warning", "handoff"):
+            raise Refusal("unsupported informational message type", 400)
+        if not isinstance(body, str) or not body or len(body.encode("utf-8")) > 4096:
+            raise Refusal("message body must be 1–4096 UTF-8 bytes", 400)
+        with self.lock, self.db() as con:
+            if recipient != "master" and not con.execute(
+                "SELECT 1 FROM nodes WHERE id=?", (recipient,)).fetchone():
+                raise Refusal("recipient node not found", 404)
+            old = con.execute(
+                "SELECT id,recipient,kind,body FROM node_messages WHERE sender=? AND idempotency_key=?",
+                (sender, key)).fetchone()
+            if old:
+                if (old["recipient"],old["kind"],old["body"]) != (recipient,kind,body):
+                    raise Refusal("message idempotency conflict")
+                return {"message_id": old["id"], "duplicate": True}
+            con.execute(
+                "INSERT INTO node_messages(sender,recipient,idempotency_key,kind,body,created,expires) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (sender,recipient,key,kind,body,time.time(),time.time()+86400))
+            return {"message_id": con.execute("SELECT last_insert_rowid()").fetchone()[0],
+                    "duplicate": False}
+
+    def inbox(self, recipient: str) -> list[dict]:
+        with self.db() as con:
+            return [dict(row) for row in con.execute(
+                "SELECT id,sender,recipient,kind,body,created FROM node_messages "
+                "WHERE recipient=? AND acknowledged IS NULL AND expires>? ORDER BY id LIMIT 50",
+                (recipient,time.time()))]
+
+    def ack_message(self, recipient: str, message_id: int) -> dict:
+        if type(message_id) is not int or message_id < 1:
+            raise Refusal("invalid message ID", 400)
+        with self.lock, self.db() as con:
+            row = con.execute(
+                "SELECT acknowledged FROM node_messages WHERE id=? AND recipient=?",
+                (message_id, recipient)).fetchone()
+            if not row:
+                raise Refusal("message not found", 404)
+            if row["acknowledged"] is None:
+                con.execute("UPDATE node_messages SET acknowledged=? WHERE id=?",
+                            (time.time(), message_id))
+        return {"acknowledged": message_id}
+
+    def receive_local(self, message: dict) -> None:
+        with self.lock, self.db() as con:
+            con.execute(
+                "INSERT OR IGNORE INTO local_messages(id,sender,kind,body,stored_at) "
+                "VALUES (?,?,?,?,?)",
+                (message["id"],message["sender"],message["kind"],message["body"],time.time()))
+
+    def local_inbox(self) -> list[dict]:
+        with self.db() as con:
+            return [dict(row) for row in con.execute(
+                "SELECT id,sender,kind,body,stored_at FROM local_messages ORDER BY id DESC LIMIT 100")]
 
     def worker_claim(self, job: str, epoch: int) -> None:
         with self.lock, self.db() as con:
@@ -427,6 +512,8 @@ def serve(config: dict, store: Store) -> ThreadingHTTPServer:
                     path = self.path.partition("?")[0]
                     if path == "/v1/jobs":
                         self.reply(200, {"protocol": PROTOCOL, "jobs": store.work(identity)})
+                    elif path == "/v1/inbox":
+                        self.reply(200, {"protocol": PROTOCOL, "messages": store.inbox(identity)})
                     elif path.startswith("/v1/submissions/"):
                         self.reply(200, store.submission(identity, path.rsplit("/", 1)[-1]))
                     else:
@@ -449,6 +536,11 @@ def serve(config: dict, store: Store) -> ThreadingHTTPServer:
                     output = store.event(identity, body["job"], body["epoch"], body["state"])
                 elif self.path == "/v1/submit":
                     output = store.save_submission(identity, body, config["artifact_dir"])
+                elif self.path == "/v1/message":
+                    output = store.send_message(identity, body["recipient"], body["key"],
+                                                body["kind"], body["body"])
+                elif self.path == "/v1/ack":
+                    output = store.ack_message(identity, body["message_id"])
                 else:
                     raise Refusal("unknown route", 404)
                 self.reply(200, {"protocol": PROTOCOL, **output})
@@ -586,6 +678,10 @@ def run_worker_once(config: dict) -> list[dict]:
     client.request("/v1/heartbeat", {"boot_id": boot, "sequence": seq,
                                     "components": store.local_components()})
     completed = client.flush(store)
+    for message in client.request("/v1/inbox")["messages"]:
+        store.receive_local(message)
+        # Only acknowledge after local transaction commit.
+        client.request("/v1/ack", {"message_id": message["id"]})
     for item in store.remote_pending():
         ack = client.request("/v1/submissions/" + item["submission_id"])
         store.remote_ack(item["job"], ack["submission_id"], ack["state"])
@@ -736,6 +832,18 @@ def cli() -> int:
     p.add_argument("config")
     p.add_argument("node")
     p.add_argument("certificate")
+    p = sub.add_parser("message")
+    p.add_argument("config")
+    p.add_argument("recipient")
+    p.add_argument("body")
+    p.add_argument("--kind", default="status")
+    p = sub.add_parser("inbox")
+    p.add_argument("config")
+    p = sub.add_parser("reconcile-worker")
+    p.add_argument("config")
+    p.add_argument("job")
+    p.add_argument("--confirm-stopped", action="store_true")
+    p.add_argument("--reason", required=True)
     p = sub.add_parser("integrate")
     p.add_argument("config")
     p.add_argument("submission")
@@ -761,6 +869,14 @@ def cli() -> int:
             print(json.dumps({"rotated": args.node}))
         elif args.action == "integrate":
             print(json.dumps(integrate(store, config, args.submission)))
+        elif args.action == "message":
+            print(json.dumps(store.send_message("master", args.recipient,
+                  os.urandom(16).hex(), args.kind, args.body)))
+        elif args.action == "inbox":
+            print(json.dumps(store.local_inbox(), indent=2))
+        elif args.action == "reconcile-worker":
+            store.worker_reconcile(args.job, args.reason, args.confirm_stopped)
+            print(json.dumps({"reconciled": args.job}))
         elif args.action == "nodes":
             print(json.dumps(store.nodes(), indent=2))
         elif args.action == "worker-once":
