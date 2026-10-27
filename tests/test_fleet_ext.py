@@ -15,6 +15,7 @@ from fleet.core import Refusal, Store, run_argv, verify_on_master
 from fleet.dashboard import serve_console
 from fleet.evidence import EvidenceRefusal, validate_remote_claim, verify_local_goal
 from fleet.service import exclusive_state_lock, supervise
+from fleet.workloads.browser import approve_origin
 
 
 class FleetSafety(unittest.TestCase):
@@ -104,6 +105,29 @@ class FleetSafety(unittest.TestCase):
         with self.store.db() as con:
             row = con.execute("SELECT * FROM worker_reconciliations").fetchone()
             self.assertEqual(row["old_epoch"], 1)
+
+    def test_incident_deduplication_and_resolution(self):
+        self.store.heartbeat("felix", "boot", 1)
+        with self.store.db() as con:
+            con.execute("UPDATE nodes SET last_seen=? WHERE id='felix'", (0,))
+        first = self.store.sweep_liveness()[0]
+        self.assertEqual(first["state"], "unreachable")
+        second = self.store.sweep_liveness()[0]
+        self.assertEqual(second["first_at"], first["first_at"])
+        self.store.heartbeat("felix", "boot", 2)
+        last = self.store.sweep_liveness()[0]
+        self.assertIsNotNone(last["resolved_at"])
+
+    def test_browser_requires_approved_staging_origin(self):
+        with self.assertRaises(ValueError):
+            approve_origin("https://staging.example.test", "https://staging.example.test", "no")
+        with self.assertRaises(ValueError):
+            approve_origin("https://other.example.test", "https://staging.example.test", "yes")
+        with self.assertRaises(ValueError):
+            approve_origin("http://other.example.test", "http://other.example.test", "yes")
+        self.assertEqual(approve_origin("https://staging.example.test",
+                                        "https://staging.example.test", "yes"),
+                         "https://staging.example.test")
 
     def test_master_denies_unisolated_verification(self):
         with self.assertRaises(Refusal):
