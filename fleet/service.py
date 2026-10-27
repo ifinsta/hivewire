@@ -13,7 +13,6 @@ import os
 import signal
 import sys
 import threading
-import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -59,7 +58,8 @@ def supervise(config: dict, stop: threading.Event, interval: float = 15,
     if not 5 <= interval <= 300:
         raise Refusal("worker polling interval must be between 5 and 300 seconds", 400)
     if report is None:
-        report = lambda item: print(json.dumps(item, sort_keys=True), flush=True)
+        def report(item):
+            print(json.dumps(item, sort_keys=True), flush=True)
     with exclusive_state_lock(config["state"]):
         failures = 0
         while not stop.is_set():
