@@ -24,11 +24,12 @@ def exclusive_state_lock(state_file: str):
     lock_path = Path(state_file + ".service.lock").resolve()
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock:
-        lock.seek(0)
-        lock.write(b"0")
-        lock.flush()
-        lock.seek(0)
         try:
+            # Do not rewrite a byte another Windows instance has locked.
+            if lock.seek(0, os.SEEK_END) == 0:
+                lock.write(b"0")
+                lock.flush()
+            lock.seek(0)
             if os.name == "nt":
                 import msvcrt
                 msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
