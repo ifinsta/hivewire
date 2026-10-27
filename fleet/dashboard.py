@@ -23,7 +23,7 @@ HTML = """<!DOCTYPE html>
 <button id="refresh" type="button">Refresh state</button><span id="state" role="status"></span></section>
 <section><h2>Registered machines</h2><div id="nodes"></div></section>
 <section><h2>Assignments</h2><div id="jobs"></div></section>
-<section><h2>Submissions</h2><div id="submissions"></div></section>
+<section><h2>Submissions</h2><div id="submissions"></div></section>\n<section><h2>Node incidents</h2><div id="incidents"></div></section>
 <footer>Missing telemetry is not proof of execution failure. Accepted source requires an independent merge receipt.</footer>
 </main><script src="/app.js"></script></body></html>"""
 
@@ -56,6 +56,7 @@ document.getElementById('refresh').addEventListener('click', async () => {
     list('nodes', data.nodes, ['id','health','last_seen']);
     list('jobs', data.jobs, ['id','state','node']);
     list('submissions', data.submissions, ['id','state','node']);
+    list('incidents', data.incidents, ['node','state','resolved_at']);
     status.textContent = 'Current snapshot';
   } catch (err) { status.textContent = err.message; }
 });"""
@@ -83,7 +84,8 @@ def serve_console(state_path: str, operator_token: str, port: int = 8765) -> Thr
                     self.reply(403, b'{"error":"access refused"}', "application/json")
                     return
                 payload = json.dumps({"nodes": store.nodes(), "jobs": store.jobs(),
-                                      "submissions": store.submissions()}, sort_keys=True).encode()
+                                      "submissions": store.submissions(),
+                                      "incidents": store.incidents()}, sort_keys=True).encode()
                 self.reply(200, payload, "application/json")
             elif self.path == "/":
                 self.reply(200, HTML.encode(), "text/html; charset=utf-8")
