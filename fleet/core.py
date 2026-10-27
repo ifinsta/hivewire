@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Event, RLock, Thread
 
@@ -174,11 +175,20 @@ class Store:
             con.execute("INSERT OR IGNORE INTO node_certificates(fingerprint,node_id,revoked,created) "
                         "SELECT fingerprint,id,0,? FROM nodes", (time.time(),))
 
-    def db(self) -> sqlite3.Connection:
+    @contextmanager
+    def db(self):
+        """Close each SQLite handle deterministically, including on Windows."""
         conn = sqlite3.connect(self.path, timeout=15)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=15000")
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def add_node(self, name: str, fingerprint: str) -> None:
         identifier(name)
