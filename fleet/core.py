@@ -165,7 +165,14 @@ class Store:
                 CREATE TABLE IF NOT EXISTS node_incidents(
                     node TEXT PRIMARY KEY, state TEXT NOT NULL, first_at REAL NOT NULL,
                     last_at REAL NOT NULL, resolved_at REAL);
+                CREATE TABLE IF NOT EXISTS node_incident_events(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node TEXT NOT NULL, state TEXT NOT NULL,
+                    event TEXT NOT NULL, at REAL NOT NULL);
             """)
+            # Backfill devices enrolled before the certificate-rotation schema existed.
+            con.execute("INSERT OR IGNORE INTO node_certificates(fingerprint,node_id,revoked,created) "
+                        "SELECT fingerprint,id,0,? FROM nodes", (time.time(),))
 
     def db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=15)
@@ -229,9 +236,13 @@ class Store:
                     else:
                         con.execute("INSERT OR REPLACE INTO node_incidents VALUES (?,?,?,?,NULL)",
                                     (node["id"], health, time.time(), time.time()))
+                        con.execute("INSERT INTO node_incident_events(node,state,event,at) VALUES (?,?,?,?)",
+                                    (node["id"],health,"raised",time.time()))
                 elif current and current["resolved_at"] is None:
                     con.execute("UPDATE node_incidents SET resolved_at=? WHERE node=?",
                                 (time.time(), node["id"]))
+                    con.execute("INSERT INTO node_incident_events(node,state,event,at) VALUES (?,?,?,?)",
+                                (node["id"],health,"resolved",time.time()))
             return [dict(row) for row in con.execute(
                 "SELECT * FROM node_incidents ORDER BY last_at DESC LIMIT 1000")]
 
@@ -308,8 +319,15 @@ class Store:
 
     def receive_local(self, message: dict) -> None:
         with self.lock, self.db() as con:
+            old = con.execute("SELECT sender,kind,body FROM local_messages WHERE id=?",
+                              (message["id"],)).fetchone()
+            if old:
+                if (old["sender"],old["kind"],old["body"]) != (
+                    message["sender"],message["kind"],message["body"]):
+                    raise Refusal("local message replay conflict")
+                return
             con.execute(
-                "INSERT OR IGNORE INTO local_messages(id,sender,kind,body,stored_at) "
+                "INSERT INTO local_messages(id,sender,kind,body,stored_at) "
                 "VALUES (?,?,?,?,?)",
                 (message["id"],message["sender"],message["kind"],message["body"],time.time()))
 
@@ -494,6 +512,9 @@ class Store:
             row = con.execute("SELECT submission_id,state FROM remote_receipts WHERE job=?", (job,)).fetchone()
             if row and row["submission_id"] != submission_id:
                 raise Refusal("remote submission ID changed")
+            order = {"received": 0, "integrating": 1, "merged": 2}
+            if row and order[state] < order[row["state"]]:
+                return
             con.execute("INSERT OR REPLACE INTO remote_receipts VALUES (?,?,?,?)",
                         (job, submission_id, state, time.time()))
             if state == "merged":
