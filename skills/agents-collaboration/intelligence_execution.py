@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
@@ -93,6 +94,64 @@ def docker_argv(image: str, command: list[str], snap: Path, name: str) -> list[s
     ]
 
 
+def bounded_process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, bool]:
+    """Supervise stdout/stderr concurrently with a hard in-memory byte ceiling.
+
+    The only production caller passes a fixed Docker argv. On timeout or output
+    overflow the owned CLI process is killed and the caller separately removes
+    its Docker daemon container. No unbounded subprocess.run(capture_output=True).
+    """
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        raise IndexErrorSafe("isolated command could not launch") from exc
+    stdout, stderr = bytearray(), bytearray()
+    overflow = threading.Event()
+    errors = []
+
+    def drain(stream, buf):
+        try:
+            while True:
+                chunk = stream.read(8192)
+                if not chunk:
+                    break
+                remaining = MAX_OUTPUT - len(buf)
+                buf.extend(chunk[:max(0, remaining)])
+                if len(chunk) > remaining:
+                    overflow.set()
+                    if proc.poll() is None:
+                        proc.kill()
+                    break
+        except OSError:
+            errors.append("output reader failure")
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=drain, args=(proc.stdout, stdout), daemon=True),
+        threading.Thread(target=drain, args=(proc.stderr, stderr), daemon=True),
+    ]
+    for worker in threads:
+        worker.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired as exc:
+            raise IndexErrorSafe("isolated process could not be stopped") from exc
+        for worker in threads:
+            worker.join(timeout=5)
+    if overflow.is_set() or errors or any(worker.is_alive() for worker in threads):
+        raise IndexErrorSafe("isolated output exceeded bound or supervision was incomplete")
+    return proc.returncode, bytes(stdout), bytes(stderr), timed_out
+
+
 def isolated(entry: dict, image: str, command: list[str], timeout: int = 90,
              reviewer: str | None = None, author: str | None = None) -> tuple[dict, bytes]:
     """Execute in a daemon-managed container, fail closed if cleanup is uncertain."""
@@ -115,16 +174,9 @@ def isolated(entry: dict, image: str, command: list[str], timeout: int = 90,
         provenance = materialize(root, commit, snap)
         argv = docker_argv(image, command, snap, identifier)
         try:
-            done = subprocess.run(argv, capture_output=True, timeout=timeout, check=False)
-            exit_code = done.returncode
-            stdout, stderr = done.stdout, done.stderr
-            timeout_hit = False
-        except subprocess.TimeoutExpired as exc:
-            exit_code = None
-            stdout, stderr = exc.stdout or b"", exc.stderr or b""
-            timeout_hit = True
-        except OSError as exc:
-            raise IndexErrorSafe("Docker invocation failed") from exc
+            exit_code, stdout, stderr, timeout_hit = bounded_process(argv, timeout)
+            if timeout_hit:
+                exit_code = None
         finally:
             # Even on timeout, never leave a privileged/unobserved process running.
             # A cleanup error makes the verification unknown, not passed.
