@@ -109,7 +109,7 @@ DEFAULTS: dict = {
         "detect_kinds": ["gates_failed", "budget_exceeded", "merge_result_stale"],
     },
     "memory": {"ttl_days": 90, "allow_cross_repo": False},
-    "gates": {"commands": [], "timeout_min": 30, "retries": 0, "keepalive_sec": 30},
+    "gates": {"commands": [], "timeout_min": 30, "retries": 0, "keepalive_sec": 30, "intelligence": False},
     "merge": {
         "strategy": "squash",  # squash | rebase
         "message": "{task}: {title}",
@@ -304,6 +304,8 @@ def validate_execution_config(cfg: dict) -> None:
         value = g[key]
         if type(value) not in (int, float) or not low <= value <= high:
             raise SwarmError(f"[gates] {key} must be a finite number between {low} and {high}; fix config.toml.")
+    if type(g.get("intelligence")) is not bool:
+        raise SwarmError("[gates] intelligence must be an explicit boolean; fix config.toml.")
     if type(g["retries"]) is not int or not 0 <= g["retries"] <= 10:
         raise SwarmError("[gates] retries must be an integer between 0 and 10; fix config.toml.")
     for commands in [
@@ -7123,7 +7125,10 @@ def gate_commands(sw: Swarm) -> list[list[str]]:
     """[gates.windows], [gates.linux] or [gates.macos] commands replace [gates] commands on that OS."""
     g = sw.config["gates"]
     os_name = current_os()
-    return g.get(os_name, {}).get("commands", g["commands"])
+    commands = g.get(os_name, {}).get("commands", g["commands"])
+    if g["intelligence"]:
+        return [*commands, [sys.executable, str(HERE / "code_intelligence.py")]]
+    return commands
 
 
 def resolve_gate(argv: list[str], worktree: Path) -> list[str]:
@@ -7760,6 +7765,9 @@ def merge_locked(sw: Swarm, who: str, t: sqlite3.Row) -> str:
         with sw.tx():
             check_merge_attempt(sw, who, t)
         target_sha = git("rev-parse", f"refs/heads/{target}", cwd=sw.main_root)
+        # Pin impact review to the actual branch base. HEAD^ would miss earlier
+        # commits of a multi-commit task before squash integration.
+        env["SWARM_INTELLIGENCE_BASE"] = target_sha
         rb = run(["git", "rebase", target_sha], cwd=path, check=False, timeout=300)
         if rb.returncode != 0:
             conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=path, check=False)
