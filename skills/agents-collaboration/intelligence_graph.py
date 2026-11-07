@@ -59,7 +59,7 @@ def safe_repo(entry: dict) -> tuple[str, Path, str]:
         root = Path(root_raw).resolve(strict=True)
     except OSError as exc:
         raise IndexErrorSafe("repository unavailable") from exc
-    if not root.is_dir() or git(root, "rev-parse", "--show-toplevel").decode().strip() != str(root):
+    if not root.is_dir() or Path(git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve() != root:
         raise IndexErrorSafe("inventory root must be the Git repository top-level")
     resolved = git(root, "rev-parse", "--verify", commit + "^{commit}").decode().strip()
     if resolved != commit:
