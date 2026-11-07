@@ -126,6 +126,10 @@ class IntelligenceGate(unittest.TestCase):
         self.assertEqual(chosen[-1], [sys.executable, str(TOOL)])
         FakeSwarm.config['gates']['intelligence'] = False
         self.assertEqual(swarm_core.gate_commands(FakeSwarm()), [['python', '--version']])
+        FakeSwarm.config['gates']['commands'] = []
+        FakeSwarm.config['gates']['intelligence'] = True
+        self.assertEqual(swarm_core.gate_commands(FakeSwarm()), [],
+                         'static analysis must never authorize a testless merge')
 
     def test_symlink_is_never_followed(self):
         try:
