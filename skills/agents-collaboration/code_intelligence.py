@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -188,7 +189,7 @@ def inspect(root: Path, base: str, head: str, policy: dict | None = None) -> dic
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', default='.', help='Repository checkout (no network fetch)')
-    parser.add_argument('--base', default='HEAD^', help='Git base commit/ref')
+    parser.add_argument('--base', default=os.environ.get('SWARM_INTELLIGENCE_BASE', 'HEAD^'), help='Git base commit/ref')
     parser.add_argument('--head', default='HEAD', help='Git head commit/ref')
     parser.add_argument('--policy', help='Trusted policy JSON file outside the reviewed worktree')
     args = parser.parse_args(argv)
