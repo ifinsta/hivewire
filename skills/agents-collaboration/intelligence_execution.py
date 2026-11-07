@@ -18,7 +18,7 @@ from pathlib import Path
 
 from intelligence_graph import IndexErrorSafe, SHA_RE, canonical, git, safe_repo, sha
 
-IMAGE_RE = re.compile(r"^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}$")
+IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]*@sha256:[a-f0-9]{64}$")
 MAX_FILES = 20_000
 MAX_BLOB = 6_000_000
 MAX_TOTAL = 90_000_000
@@ -125,7 +125,7 @@ def isolated(entry: dict, image: str, command: list[str], timeout: int = 90,
             # A cleanup error makes the verification unknown, not passed.
             cleanup = subprocess.run(["docker", "rm", "-f", identifier],
                                      capture_output=True, timeout=15, check=False)
-        if cleanup.returncode not in (0, 1):
+        if cleanup.returncode != 0 and b"No such container" not in cleanup.stderr:
             raise IndexErrorSafe("container cleanup uncertain; inspect the Docker daemon")
         if len(stdout) > MAX_OUTPUT or len(stderr) > MAX_OUTPUT:
             raise IndexErrorSafe("isolated command output exceeds retention bound")
