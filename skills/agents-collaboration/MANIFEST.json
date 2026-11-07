@@ -3,7 +3,7 @@
   "files": {
     "SKILL.md": "fc2cb5bd83d0f6e356d61725555f2e013b0c22ca2f9206fc501d69aa233a30e2",
     "hivewire.py": "e43da4b53b040280fca68f37bcef1e8d22b8f94b61483aa14dc83fe8ae37594c",
-    "swarm_core.py": "604505e664f6ba36ad462440e3b511d10af30b038c9235207f6f41d59809cc67",
+    "swarm_core.py": "c36723af60f12c279c4162cac85bc4430194bf1c032957354bf8876fcf14e171",
     "swarm_deputy.py": "18dbe1e554c8bfffab48d34170350e391d2cf84bd09933ce54e173cdf32a2b8b",
     "swarm_deadhand.py": "b72adcbd20df4e9f9266190e6aa97ee2e02aad8493e46aea0b5c6e5ada853a6e",
     "EDGE-CASES.md": "58ed5197804736671d0010b5e78807cc0411a1e5a141f7c673a4f4b5b0dd1d97",
@@ -12,6 +12,7 @@
     "swarm_web.py": "8ae64a78cd0ba0801fc805c0ebe04552fccd922cffdb42182dd89e44040350ad",
     "swarm_sessions.py": "f2f9cbb0103bfbf0bc198e6b10416329d52901b080af39b2fa947b2b502be140",
     "swarm_workspace.py": "ae0fda61cfbb72f99447f9247e177778ca5dc689ae67d65e649b6a2f7865e2be",
-    "swarm_fonts.css": "aa54f1b78f6e332e3bc8708dbcc046f12dd06861393a782a6d5da0a69157df77"
+    "swarm_fonts.css": "aa54f1b78f6e332e3bc8708dbcc046f12dd06861393a782a6d5da0a69157df77",
+    "code_intelligence.py": "5a39163dbe229362954ffb25ee3089e34269d8895d8ddb5cb52f53432d72142e"
   }
 }
