@@ -70,7 +70,8 @@ def record(store: Path, item: dict) -> dict:
     val = validate(item)
     identity_hash = hashlib.sha256((val["tenant"] + "\0" + val["repo"] + "\0" + val["observationId"]).encode()).hexdigest()
     digest = sha(canonical(val))
-    with connect(store) as db:
+    db = connect(store)
+    try:
         previous = db.execute("""SELECT payload_digest FROM observations
             WHERE tenant=? AND repo=? AND observation_hash=?""",
             (val["tenant"], val["repo"], identity_hash)).fetchone()
@@ -83,6 +84,9 @@ def record(store: Path, item: dict) -> dict:
             (val["tenant"], val["repo"], val["commit"], identity_hash, val["source"],
              val["exposures"], val["checksRun"], val["checksPassed"], val["findings"],
              val["falsePositives"], val["escapedDefects"], digest))
+        db.commit()
+    finally:
+        db.close()
     return {"stored": True, "idempotencyHash": identity_hash, "observationDigest": digest,
             "rawDataStored": False, "collectorSignatureVerified": False}
 
