@@ -38,6 +38,43 @@ The catalog contains commit and file-content hashes, symbols, lexical dependency
 
 Cargo-resolved edges require trusted offline Cargo metadata, generated against the correct workspace and pinned by its SHA-256, supplied in the repository inventory as cargoMetadata and cargoMetadataSha256. Metadata source revocation and proof of generation against the exact commit require an independent governed command receipt. Cargo package resolution is not function-level compiler resolution.
 
+## Graph-directed consumer verification
+
+The verify-impact command takes the integrity-checked catalog, selects the source owner and every direct lexical/declared consumer repository, and requires an administrator-owned verification policy covering exactly those repositories. No consumer may silently lack a test.
+
+Example trusted policy (replace both placeholder image digests with real pinned images):
+
+~~~json
+{
+  "version": 1,
+  "jobs": [
+    {
+      "repo": "ifinsta/jani",
+      "image": "registry.example/build@sha256:REPLACE_WITH_REAL_SHA256",
+      "argv": ["cargo", "test", "--offline", "--workspace"],
+      "timeoutSeconds": 600
+    },
+    {
+      "repo": "ifinsta/hivewire",
+      "image": "registry.example/python@sha256:REPLACE_WITH_REAL_SHA256",
+      "argv": ["python", "-m", "unittest", "discover", "-s", "tests"],
+      "timeoutSeconds": 600
+    }
+  ]
+}
+~~~
+
+The plan is nonexecuting, whereas the next command performs actual Docker tests of every selected consumer repository pinned to its exact commit:
+
+~~~bash
+python .agents/skills/agents-collaboration/hivewire_intelligence.py verify-impact --inventory /var/lib/hivewire/trust/inventory.json --catalog /var/lib/hivewire/evidence/catalog.json --policy /var/lib/hivewire/trust/verification.json --repo ifinsta/jani --path backend/mcp/src/lib.rs --plan-only --output /var/lib/hivewire/evidence/consumer-plan.json
+
+python .agents/skills/agents-collaboration/hivewire_intelligence.py verify-impact --inventory /var/lib/hivewire/trust/inventory.json --catalog /var/lib/hivewire/evidence/catalog.json --policy /var/lib/hivewire/trust/verification.json --repo ifinsta/jani --path backend/mcp/src/lib.rs --output /var/lib/hivewire/evidence/consumer-tests.json
+~~~
+
+The verifier rebuilds the graph from the trusted inventory and demands an exact catalog digest match. Missing policy jobs, outdated catalogs, unknown Docker execution, or failed test jobs cannot pass. The result includes a digest and per-repository receipts. It never grants independent human clearance, issues signatures, or performs a final merge.
+
+
 ## Isolated tests and independent reviewer agents
 
 ~~~bash
