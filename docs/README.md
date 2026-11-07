@@ -25,6 +25,7 @@ The [migration guide](legacy-migration.md) describes the breaking cleanup.
 | One terminal, headless workers and retained audit tabs | [Managed sessions](managed-sessions.md) |
 | Integration, outcome checks and receipts | [Completion evidence](completion-evidence.md) |
 | Opt-in commit-pinned source impact gate | [Code intelligence](code-intelligence.md) |
+| Multi-repo indexing, isolated reviewers/tests, evidence signatures, feedback and MCP | [Intelligence runtime](intelligence-runtime.md) |
 | Recorded time, tokens/cost and missing accounting | [Usage allowances](usage-budgets.md) |
 | Browser dashboard, demo board, actions, access token and observation mode | [Web dashboard](web-dashboard.md) |
 | Regenerating the dashboard pictures | [dashboard_demo.py](../examples/dashboard_demo.py), [dashboard_screenshots.py](../scripts/dashboard_screenshots.py), [images](images/) |
