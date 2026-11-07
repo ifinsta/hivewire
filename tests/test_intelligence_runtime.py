@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills" / "agents-collaboration"
@@ -17,6 +18,7 @@ import intelligence_execution as execution  # noqa: E402
 import intelligence_graph as graph  # noqa: E402
 import intelligence_mcp as mcp  # noqa: E402
 import intelligence_metrics as metrics  # noqa: E402
+import intelligence_verify as verify_runtime  # noqa: E402
 
 
 class IntelligenceRuntime(unittest.TestCase):
@@ -210,6 +212,69 @@ class IntelligenceRuntime(unittest.TestCase):
         catalog_path.write_text(json.dumps(self.catalog))
         self.assertEqual(mcp.serve(catalog_path, "tenant-1", None, None, input_stream, output), 0)
         self.assertEqual(len(json.loads(output.getvalue())["result"]["tools"]), 2)
+
+    def consumer_policy(self):
+        image = "registry.invalid/test@sha256:" + "f" * 64
+        return {"version": 1, "jobs": [
+            {"repo": name, "image": image,
+             "argv": ["python", "-m", "unittest"], "timeoutSeconds": 90}
+            for name in ("ifinsta/a", "ifinsta/b")
+        ]}
+
+    def test_cross_repository_plan_requires_owner_and_every_consumer(self):
+        selected = verify_runtime.selection(self.inventory, self.manifest, self.catalog,
+                                            "ifinsta/a", "payments.rs")
+        self.assertEqual(selected["repositories"], ["ifinsta/a", "ifinsta/b"])
+        self.assertFalse(selected["independentApproval"])
+        forged = json.loads(json.dumps(self.catalog))
+        forged["repositories"][0]["commit"] = "f" * 40
+        with self.assertRaises(graph.IndexErrorSafe):
+            verify_runtime.selection(self.inventory, self.manifest, forged,
+                                     "ifinsta/a", "payments.rs")
+
+    def test_cross_repo_consumer_jobs_are_all_required_and_fail_closed(self):
+        policy = self.consumer_policy()
+        policy_path = self.home / "verified-policy.json"
+        policy_path.write_text(json.dumps(policy))
+        expected = {
+            "passed": True, "digest": "a" * 64,
+            "exitCode": 0
+        }
+        with mock.patch.object(verify_runtime, "isolated", return_value=(expected, b"")) as execute:
+            result = verify_runtime.verify(self.inventory, self.manifest, self.catalog,
+                                           policy, policy_path, "ifinsta/a", "payments.rs")
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(result["executions"], 2)
+        self.assertTrue(result["allPassed"])
+        self.assertFalse(result["clearanceGranted"])
+        removed = {"version": 1, "jobs": policy["jobs"][:-1]}
+        with self.assertRaises(graph.IndexErrorSafe):
+            verify_runtime.verify(self.inventory, self.manifest, self.catalog,
+                                  removed, policy_path, "ifinsta/a", "payments.rs")
+        with mock.patch.object(verify_runtime, "isolated", side_effect=graph.IndexErrorSafe("no Docker")):
+            unavailable = verify_runtime.verify(self.inventory, self.manifest, self.catalog,
+                                                policy, policy_path, "ifinsta/a", "payments.rs")
+        self.assertFalse(unavailable["allPassed"])
+        self.assertTrue(all(x["status"] == "unknown" for x in unavailable["results"]))
+
+    def test_verify_impact_plan_only_is_nonexecuting(self):
+        destination = self.home / "consumer-plan.json"
+        with mock.patch.object(verify_runtime, "isolated") as execute:
+            status = cli.main(["verify-impact", "--inventory", str(self.manifest),
+                               "--catalog", str(self._save_catalog()),
+                               "--policy", str(self.manifest),
+                               "--repo", "ifinsta/a", "--path", "payments.rs",
+                               "--output", str(destination), "--plan-only"])
+        self.assertEqual(status, 0)
+        execute.assert_not_called()
+        self.assertEqual(json.loads(destination.read_text())["repositories"],
+                         ["ifinsta/a", "ifinsta/b"])
+
+    def _save_catalog(self) -> Path:
+        location = self.home / "consumer-catalog.json"
+        location.write_text(json.dumps(self.catalog))
+        return location
+
 
     def test_cli_real_git_snapshot_and_immutable_report(self):
         dest = self.home / "catalog2.json"
