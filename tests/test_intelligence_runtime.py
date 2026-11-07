@@ -136,6 +136,21 @@ class IntelligenceRuntime(unittest.TestCase):
         with self.assertRaises(graph.IndexErrorSafe):
             execution.validate_command(["python", "ok\x00unsafe"])
 
+    def test_bounded_container_supervisor_rejects_unlimited_output(self):
+        rc, out, err, timed_out = execution.bounded_process(
+            [sys.executable, "-c", "print('bounded output')"], 5
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn(b"bounded output", out)
+        self.assertEqual(err, b"")
+        self.assertFalse(timed_out)
+        with self.assertRaises(graph.IndexErrorSafe):
+            execution.bounded_process(
+                [sys.executable, "-c",
+                 "import sys;sys.stdout.write('X'*2100000);sys.stdout.flush()"], 5
+            )
+
+
     def test_review_agent_evidence_must_match_pinned_git_blob_and_identity(self):
         entry = self.entries[0]
         run = {"repo": entry["name"], "commit": entry["commit"], "passed": True,
