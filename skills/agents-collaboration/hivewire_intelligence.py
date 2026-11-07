@@ -17,6 +17,7 @@ from intelligence_execution import isolated, validate_agent_review
 from intelligence_graph import IndexErrorSafe, build, check_catalog, impact
 from intelligence_mcp import serve
 from intelligence_metrics import compare, record
+from intelligence_verify import selection, verify
 
 MAX_JSON = 20_000_000
 
@@ -50,6 +51,11 @@ def main(argv=None) -> int:
     impacted.add_argument("--catalog", required=True)
     impacted.add_argument("--repo", required=True)
     impacted.add_argument("--path", required=True)
+    consumer = sub.add_parser("verify-impact", help="test every pinned affected repository")
+    for field in ("inventory", "catalog", "policy", "repo", "path", "output"):
+        consumer.add_argument("--" + field, required=True)
+    consumer.add_argument("--plan-only", action="store_true",
+                          help="produce required consumers without executing jobs")
     for name in ("test", "review-agent"):
         run = sub.add_parser(name, help="run in a pinned read-only Docker container")
         run.add_argument("--inventory", required=True)
@@ -87,6 +93,23 @@ def main(argv=None) -> int:
             result = impact(check_catalog(load(a.catalog)), a.repo, a.path)
             print(json.dumps(result, sort_keys=True))
             return 0
+        if a.mode == "verify-impact":
+            inventory = load(a.inventory, 200_000)
+            catalog = check_catalog(load(a.catalog))
+            if a.plan_only:
+                result = selection(inventory, Path(a.inventory), catalog, a.repo, a.path)
+                write_once(a.output, result)
+                print(json.dumps({"planDigest": result["digest"],
+                                  "requiredConsumers": result["repositories"],
+                                  "executions": 0, "clearanceGranted": False}))
+                return 0
+            result = verify(inventory, Path(a.inventory), catalog, load(a.policy, 200_000),
+                            Path(a.policy), a.repo, a.path)
+            write_once(a.output, result)
+            print(json.dumps({"verificationDigest": result["digest"],
+                              "executions": result["executions"], "allPassed": result["allPassed"],
+                              "clearanceGranted": False}))
+            return 0 if result["allPassed"] else 2
         if a.mode in ("test", "review-agent"):
             inventory = load(a.inventory, 200_000)
             entry = next((e for e in inventory.get("repositories", [])
