@@ -81,10 +81,15 @@ def docker_argv(image: str, command: list[str], snap: Path, name: str) -> list[s
         "--network", "none", "--read-only",
         "--user", "65534:65534", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges",
-        "--pids-limit", "64", "--memory", "512m", "--cpus", "1",
-        "--tmpfs", "/tmp:rw,noexec,nosuid,size=32m",
+        "--pids-limit", "128", "--memory", "2g", "--cpus", "2",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,size=128m,mode=1777",
+        "--tmpfs", "/work:rw,exec,nosuid,size=1g,uid=65534,gid=65534,mode=700",
+        "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "HOME=/tmp",
+        "--env", "CARGO_TARGET_DIR=/work/target",
         "--mount", "type=bind,src=" + str(snap) + ",dst=/source,readonly",
-        "--workdir", "/source", image, *command,
+        "--workdir", "/work", image,
+        "/bin/sh", "-c", 'cp -R /source/. /work/ && cd /work && exec "$@"',
+        "hivewire-entry", *command,
     ]
 
 
