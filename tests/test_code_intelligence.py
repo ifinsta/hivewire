@@ -39,7 +39,7 @@ class IntelligenceGate(unittest.TestCase):
         self.git('commit', '-qm', 'fixture')
 
     def run_tool(self, *args):
-        completed = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root), '--base', self.base, *args], text=True, capture_output=True)
+        completed = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root), '--base', self.base, *args], text=True, capture_output=True, check=False)
         return completed.returncode, json.loads(completed.stdout or completed.stderr)
 
     def test_removed_public_api_blocks_and_tracks_dependents(self):
@@ -116,7 +116,6 @@ class IntelligenceGate(unittest.TestCase):
         core_path = TOOL.with_name('swarm_core.py')
         if not core_path.exists():
             self.skipTest('standalone tool fixture, no coordinator source')
-        import importlib.util
         import sys
         sys.path.insert(0, str(core_path.parent))
         import swarm_core
