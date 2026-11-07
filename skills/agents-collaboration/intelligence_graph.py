@@ -146,6 +146,7 @@ def cargo_edges(entry: dict, root: Path, repo: str) -> list[dict]:
 
 
 def build(inventory: dict, inventory_path: Path) -> dict:
+    inventory_path = inventory_path.resolve(strict=True)
     if not isinstance(inventory, dict) or set(inventory) != {"version", "repositories"} or inventory["version"] != 1:
         raise IndexErrorSafe("inventory schema unsupported")
     declared = inventory["repositories"]
