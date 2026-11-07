@@ -113,9 +113,14 @@ def compare(store: Path, tenant: str, repo: str, before: str, after: str,
         raise IndexErrorSafe("regression minima must be positive")
     if before == after:
         raise IndexErrorSafe("baseline must differ from candidate")
-    with connect(store) as db:
+    if not store.is_file() or store.is_symlink():
+        raise IndexErrorSafe("telemetry store does not exist or is unsafe")
+    db = sqlite3.connect("file:" + store.resolve().as_posix() + "?mode=ro", uri=True, timeout=5)
+    try:
         b = aggregate(db, tenant, repo, before, source)
         a = aggregate(db, tenant, repo, after, source)
+    finally:
+        db.close()
     coverage_b = ppm(b["checksPassed"], b["checksRun"])
     coverage_a = ppm(a["checksPassed"], a["checksRun"])
     escape_b = ppm(b["escapedDefects"], b["exposures"])
