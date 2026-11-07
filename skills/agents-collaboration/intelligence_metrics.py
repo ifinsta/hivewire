@@ -7,7 +7,6 @@ A metric report is advisory until the upstream collector's provenance is verifie
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 from pathlib import Path
 
@@ -94,7 +93,7 @@ def aggregate(db: sqlite3.Connection, tenant: str, repo: str, commit: str,
         sum(findings),sum(false_positives),sum(escaped_defects)
         FROM observations WHERE tenant=? AND repo=? AND commit_sha=? AND source=?""",
         (tenant, repo, commit, source)).fetchone()
-    return dict(zip(("samples",) + FIELDS, [x or 0 for x in row]))
+    return dict(zip(("samples",) + FIELDS, [x or 0 for x in row], strict=True))
 
 
 def ppm(n: int, denominator: int) -> int | None:
