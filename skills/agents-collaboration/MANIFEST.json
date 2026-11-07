@@ -18,6 +18,7 @@
     "intelligence_execution.py": "5cb6676fcae2cdf673b05b352feda616da421201a2046b910daaa415cc1c042e",
     "intelligence_metrics.py": "6704b35aa68064f61d070852ed32a64068eafcf92c5e4c6f25a900b11a5b52a4",
     "intelligence_mcp.py": "8a8ce9a5f55c14e08a167526af5a944aaef65972d344e404b7056afbe6248532",
-    "hivewire_intelligence.py": "565bd2747052f36d97f6776192f5743137a40e6f210bdc5ca8708ad9a3e89000"
+    "hivewire_intelligence.py": "103c3b69db488420f12518df08ae6826268b5b32be9554cdf520cc44fb04d028",
+    "intelligence_verify.py": "3f4128728da92524b430680a4c34b80646056be39c8f9d8ad2c4a3b5cd3c5eed"
   }
 }
