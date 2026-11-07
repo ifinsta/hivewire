@@ -159,7 +159,7 @@ def build(inventory: dict, inventory_path: Path) -> dict:
     files = []
     explicit = []
     compiled = []
-    for entry, (name, root, commit) in zip(declared, roots):
+    for entry, (name, root, commit) in zip(declared, roots, strict=True):
         present = set()
         for path, suffix, body in blobs(root, commit):
             if len(files) >= MAX_FILES:
