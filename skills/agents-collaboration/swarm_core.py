@@ -7126,6 +7126,10 @@ def gate_commands(sw: Swarm) -> list[list[str]]:
     g = sw.config["gates"]
     os_name = current_os()
     commands = g.get(os_name, {}).get("commands", g["commands"])
+    # Static impact findings are never a substitute for executable acceptance tests.
+    # An intelligence-only configuration must not unlock merge/goal closure gates.
+    if not commands:
+        return []
     if g["intelligence"]:
         return [*commands, [sys.executable, str(HERE / "code_intelligence.py")]]
     return commands
