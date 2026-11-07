@@ -100,6 +100,34 @@ class IntelligenceGate(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(report['blockingCount'], 0)
 
+    def test_merge_base_environment_covers_multiple_commits(self):
+        (self.root / 'payments.rs').write_text('pub fn charge() {}\n// intermediate\n', encoding='utf-8')
+        self.commit()
+        (self.root / 'payments.rs').write_text('fn charge() {}\n', encoding='utf-8')
+        self.commit()
+        import os
+        completed = subprocess.run([sys.executable, str(TOOL), '--repo', str(self.root)],
+                                   env={**os.environ, 'SWARM_INTELLIGENCE_BASE': self.base},
+                                   text=True, capture_output=True, check=False)
+        self.assertEqual(completed.returncode, 2, completed.stdout + completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)['base'], self.base)
+
+    def test_coordinator_gate_flag_and_trusted_installed_path(self):
+        core_path = TOOL.with_name('swarm_core.py')
+        if not core_path.exists():
+            self.skipTest('standalone tool fixture, no coordinator source')
+        import importlib.util
+        import sys
+        sys.path.insert(0, str(core_path.parent))
+        import swarm_core
+        class FakeSwarm:
+            config = {'gates': {'commands': [['python', '--version']], 'intelligence': True}}
+        chosen = swarm_core.gate_commands(FakeSwarm())
+        self.assertEqual(chosen[0], ['python', '--version'])
+        self.assertEqual(chosen[-1], [sys.executable, str(TOOL)])
+        FakeSwarm.config['gates']['intelligence'] = False
+        self.assertEqual(swarm_core.gate_commands(FakeSwarm()), [['python', '--version']])
+
     def test_symlink_is_never_followed(self):
         try:
             (self.root / 'leak.rs').symlink_to('payments.rs')
