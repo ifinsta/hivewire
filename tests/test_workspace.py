@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from unittest import mock
 
 from test_hardening import HardeningCase, core
@@ -22,8 +23,17 @@ class Workspace(HardeningCase):
         super().setUp()
         self.join("ann")
 
+    @contextmanager
     def desktop(self):
-        return mock.patch.object(workspace, "desktop_available", return_value=True)
+        # Simulate a desktop with a terminal, independent of the CI host.
+        plan = workspace.terminal_plan
+        def simulated_plan(*args, **kwargs):
+            kwargs["has"] = lambda name: name in {"xterm", "wt"}
+            return plan(*args, **kwargs)
+
+        with mock.patch.object(workspace, "desktop_available", return_value=True), \
+             mock.patch.object(workspace, "terminal_plan", side_effect=simulated_plan):
+            yield
 
     def dashboard(self):
         return mock.patch.object(workspace, "ensure_dashboard", return_value=({"id": "testboard"}, {"port": 8787, "token": "private-capability"}))
