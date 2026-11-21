@@ -13,6 +13,7 @@ native notification hooks.
 | `codex` | `codex exec "<prompt>" -C <dir> --add-dir <git dir>` | `codex login status` | `--full-auto` | help checked at 0.104.0 |
 | `gemini` | `gemini -p "<prompt>"` | none (reported as unknown) | `--approval-mode yolo` | help checked at 0.53.1 |
 | `kilocode` (Kilo Code) | `kilocode --auto --nosplash --workspace <dir> "<prompt>"` | none (`kilocode auth` starts a login, so it is never run; reported as unknown) | `--yolo` | help checked at 0.18.0 |
+| `jani` ([Jani](https://github.com/ifinsta/jani)) | `jani --print "<prompt>" --repo <worktree> --max-steps 8` | none (unknown) | refused | **experimental, unverified** |
 | `deepseek` (deepseek-tui) | `deepseek exec "<prompt>"` | `deepseek auth status` | none | **unverified**: `exec` does not document its arguments |
 
 These are recorded help/option checks for the listed versions, not claims about
@@ -38,6 +39,33 @@ hivewire spawn opencode --name ds1 --task T1 --model deepseek/deepseek-chat
 of its own. The adapter never uses it: the claim has already made the task's
 worktree and branch. A model is chosen with `-mo`, and a provider with `kilocode
 config` beforehand.
+
+## Experimental Jani observer
+
+The built-in `jani` adapter is an opt-in launch experiment, not a full
+collaboration integration. It uses the assigned Git worktree and a bounded
+print-mode invocation. It does not grant write or command authority, change
+Jani's policy, auto-approve operations, or turn model output into completion
+evidence. There is no interactive adapter or native inbox/interrupt bridge.
+
+```bash
+hivewire probe jani
+hivewire spawn jani --name jani-observer --task T1 --force --dry-run
+```
+
+Without `--force`, the unverified adapter refuses to spawn; `--unattended`
+is refused even if the repository allows unattended agents elsewhere. Use only
+a disposable synthetic test repository with an operator-reviewed provider and
+settings. `--force` permits testing the adapter, not bypassing Jani's policy.
+A real spawn may make model requests and claims a Hivewire task; do not expect
+the observer to finish the task alone. An operator must check the evidence,
+handle any retained assignment, and explicitly decide its disposition.
+
+This slice does not authenticate agents, inject messages into a running Jani
+session, translate a Hivewire task into a signed Jani work contract, or attest
+provider cost. The local machine and configuration remain trusted. Keep
+`verified = false` until a real binary/provider trial and independent gate
+have been recorded.
 
 ## Readiness
 

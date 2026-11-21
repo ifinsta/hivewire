@@ -200,6 +200,17 @@ DEFAULTS: dict = {
             "unattended": ["--yolo"],
             "verified": True,
         },
+        "jani": {
+            # Read-only launch experiment. Hivewire coordination is not Jani authority.
+            "version": ["jani", "--version"],
+            "auth": [],
+            "run": ["jani", "--print", "{prompt}", "--repo", "{cwd}", "--max-steps", "8"],
+            "help": ["jani", "--help"],
+            "model": ["--model", "{model}"],
+            "unattended": [],
+            "verified": False,
+            "note": "experimental read-only observer; force only, no native bus hooks or acceptance authority",
+        },
         "deepseek": {
             "version": ["deepseek", "--version"],
             "auth": ["deepseek", "auth", "status"],
@@ -9423,6 +9434,8 @@ def cmd_spawn(sw: Swarm, a) -> None:
     ad = sw.config["adapters"].get(a.kind)
     if not ad:
         raise SwarmError(f"No adapter {a.kind!r}; known: {', '.join(sw.config['adapters'])}.")
+    if a.kind == "jani" and a.unattended:
+        raise SwarmError("The experimental Jani adapter does not support unattended authority.")
     if not shutil.which(ad["run"][0]):
         raise SwarmError(f"{ad['run'][0]} is not installed (`hivewire probe`).")
     if a.unattended and not sw.config["spawn"]["allow_unattended"]:
