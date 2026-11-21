@@ -75,6 +75,28 @@ provider cost. The local machine and configuration remain trusted. Keep
 `verified = false` until a real binary/provider trial and independent gate
 have been recorded.
 
+## Experimental assignment observation for independent authorization
+
+A local human-coordinated board can emit a bounded machine-readable observation:
+
+```bash
+hivewire dispatch-snapshot T1 --owner jani-observer --expected-epoch 1 --as human --json
+```
+
+The observation binds the current task, owner, epoch, active contract, worktree,
+base/head Git commits, configuration digest, terms digest and deadline. Paused,
+expired, blocked, missing, stale or incident-review assignments are refused.
+It does **not** authenticate a human, sign a grant, reserve an execution, fence
+an external side effect, or authorize an MCP operation. The normal CLI sweep may
+update liveness bookkeeping before reading the observation. The local board and
+its configuration remain a single-machine trust boundary.
+
+A future trusted enterprise manager must independently authenticate the
+initiator, pin identity and signing trust roots, derive a Jani work contract and
+policy, recheck live ownership before admission and every external effect, and
+reconcile uncertain results. Do not treat `authority: none` as a bearer grant or
+copy a snapshot's tenant/role from untrusted task prose.
+
 ## Readiness
 
 ```bash
