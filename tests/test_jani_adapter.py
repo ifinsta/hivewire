@@ -11,6 +11,20 @@ from test_hardening import HardeningCase, core
 
 
 class JaniAdapter(HardeningCase):
+    def setUp(self):
+        super().setUp()
+        config = self.root / ".agents" / "swarm" / "config.toml"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "[swarm]\n", '[swarm]\ncoordinator = "human"\n'), encoding="utf-8")
+        self.git("commit", "-qam", "assign human coordinator")
+
+    def test_observer_cannot_launch_under_automatic_coordinator(self):
+        with self.board() as sw, mock.patch.object(core.shutil, "which", return_value="jani"):
+            sw.config["swarm"]["coordinator"] = "auto"
+            with self.assertRaisesRegex(core.SwarmError, "requires"):
+                core.cmd_spawn(sw, self.args(force=True))
+            self.assertIsNone(sw.agent("jani-observer"))
+
     @staticmethod
     def args(**changes):
         args = dict(kind="jani", name="jani-observer", task="T1", model="",

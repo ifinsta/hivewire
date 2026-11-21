@@ -9436,6 +9436,8 @@ def cmd_spawn(sw: Swarm, a) -> None:
         raise SwarmError(f"No adapter {a.kind!r}; known: {', '.join(sw.config['adapters'])}.")
     if a.kind == "jani" and a.unattended:
         raise SwarmError("The experimental Jani adapter does not support unattended authority.")
+    if a.kind == "jani" and sw.config["swarm"]["coordinator"] != HUMAN:
+        raise SwarmError("The experimental Jani observer requires [swarm] coordinator = human.")
     if not shutil.which(ad["run"][0]):
         raise SwarmError(f"{ad['run'][0]} is not installed (`hivewire probe`).")
     if a.unattended and not sw.config["spawn"]["allow_unattended"]:

@@ -53,6 +53,14 @@ hivewire probe jani
 hivewire spawn jani --name jani-observer --task T1 --force --dry-run
 ```
 
+Configure the pool with a human coordinator before launching an observer:
+
+```toml
+[swarm]
+coordinator = "human"
+```
+
+This prevents the observer from automatically becoming the coordinator.
 Without `--force`, the unverified adapter refuses to spawn; `--unattended`
 is refused even if the repository allows unattended agents elsewhere. Use only
 a disposable synthetic test repository with an operator-reviewed provider and
