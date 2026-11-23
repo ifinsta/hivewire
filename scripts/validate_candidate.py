@@ -90,7 +90,7 @@ def main():
     if len(ids) != len(set(ids)) or not ids:
         from collections import Counter
         duplicates = [(name, count) for name, count in Counter(ids).items() if count > 1]
-        raise RuntimeError(f"Discovery must produce unique, nonempty test IDs: {duplicates[:20]}")
+        raise RuntimeError(f"Discovery must produce unique, nonempty test IDs: duplicates={duplicates[:20]}, total={len(ids)}")
     (output / "source-before.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
 
     def run(index):
