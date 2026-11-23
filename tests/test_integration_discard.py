@@ -7,7 +7,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
-import test_generated_paths as generated_paths
+import test_generated_paths
 from test_generated_paths import VERSION_HOOK
 from test_hardening import core
 from test_oversight import OversightCase
@@ -20,8 +20,8 @@ FAILING_HOOK = [
 
 
 class IntegrationDiscard(OversightCase):
-    config = generated_paths.GeneratedPaths.config
-    with_version_hook = generated_paths.GeneratedPaths.with_version_hook
+    config = test_generated_paths.GeneratedPaths.config
+    with_version_hook = test_generated_paths.GeneratedPaths.with_version_hook
 
     @contextmanager
     def board(self):

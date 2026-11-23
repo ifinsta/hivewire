@@ -796,7 +796,7 @@ class FirstRealRun(SwarmCase):
     def test_ec144_relative_gate_paths_resolve_from_the_worktree(self):
         here = swarm_module.detect_environment()["os"]
         worktree = Path(self.tmp.name) / "repo-wt" / "T1"
-        rel = os.path.relpath(sys.executable, worktree).replace("\\", "/")
+        rel = os.path.relpath(sys.executable, worktree.resolve()).replace("\\", "/")
         cfg = self.root / ".agents" / "swarm" / "config.toml"
         cfg.write_text(
             cfg.read_text(encoding="utf-8") + f'\n[gates.{here}]\ncommands = [["{rel}", "-c", "print(1)"]]\n',

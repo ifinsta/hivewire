@@ -109,7 +109,7 @@ DEFAULTS: dict = {
         "detect_kinds": ["gates_failed", "budget_exceeded", "merge_result_stale"],
     },
     "memory": {"ttl_days": 90, "allow_cross_repo": False},
-    "gates": {"commands": [], "timeout_min": 30, "retries": 0, "keepalive_sec": 30},
+    "gates": {"commands": [], "timeout_min": 30, "retries": 0, "keepalive_sec": 30, "intelligence": False},
     "merge": {
         "strategy": "squash",  # squash | rebase
         "message": "{task}: {title}",
@@ -199,6 +199,17 @@ DEFAULTS: dict = {
             "model": ["-mo", "{model}"],
             "unattended": ["--yolo"],
             "verified": True,
+        },
+        "jani": {
+            # Read-only launch experiment. Hivewire coordination is not Jani authority.
+            "version": ["jani", "--version"],
+            "auth": [],
+            "run": ["jani", "--print", "{prompt}", "--repo", "{cwd}", "--max-steps", "8"],
+            "help": ["jani", "--help"],
+            "model": ["--model", "{model}"],
+            "unattended": [],
+            "verified": False,
+            "note": "experimental read-only observer; force only, no native bus hooks or acceptance authority",
         },
         "deepseek": {
             "version": ["deepseek", "--version"],
@@ -304,6 +315,8 @@ def validate_execution_config(cfg: dict) -> None:
         value = g[key]
         if type(value) not in (int, float) or not low <= value <= high:
             raise SwarmError(f"[gates] {key} must be a finite number between {low} and {high}; fix config.toml.")
+    if type(g.get("intelligence")) is not bool:
+        raise SwarmError("[gates] intelligence must be an explicit boolean; fix config.toml.")
     if type(g["retries"]) is not int or not 0 <= g["retries"] <= 10:
         raise SwarmError("[gates] retries must be an integer between 0 and 10; fix config.toml.")
     for commands in [
@@ -5278,6 +5291,61 @@ def cmd_interrupt(sw: Swarm, a) -> None:
         raise deputy.DeputyError(str(exc))
 
 
+def dispatch_snapshot(sw: Swarm, task_id: str, owner: str, epoch: int) -> dict:
+    """Local coordination observation for an independently authenticated issuer.
+
+    No authority, identity proof or launch token is created. The issuer must
+    bind this snapshot to its own tenant/workspace/policy, verify the live
+    ownership epoch again before effects, and hold its own protected lease.
+    """
+    import hashlib
+
+    with sw.tx():
+        t = sw.task(task_id)
+        c = current_contract(sw, task_id)
+        agent = sw.agent(owner)
+        if sw.config["swarm"]["coordinator"] != HUMAN or sw.paused():
+            raise SwarmError("Dispatch snapshot requires an unpaused human-coordinated board.")
+        if (t["removed"] or t["state"] not in ("claimed", "planning", "in_progress")
+                or t["assignee"] != owner or t["epoch"] != epoch or epoch <= 0
+                or not agent or agent["task"] != task_id or agent["state"] in ("offline", "left")
+                or agent["reviewing"]):
+            raise SwarmError("Dispatch snapshot ownership or state mismatch.")
+        if (not c or c["state"] != "active" or c["owner"] != owner or c["epoch"] != epoch
+                or c["checkpoint_due"] or t["budget_flagged"] or task_blockers(sw, t)):
+            raise SwarmError("Dispatch snapshot requires an active, unblocked contract.")
+        interrupt_permission(sw, t)
+        if sw.db.execute("SELECT 1 FROM questions WHERE task=? AND critical=1 AND answer IS NULL AND waived=0",
+                         (task_id,)).fetchone():
+            raise SwarmError("Dispatch snapshot blocked by a critical question.")
+        if not t["worktree"] or not t["base_sha"]:
+            raise SwarmError("Dispatch snapshot requires an assigned worktree.")
+        worktree = Path(t["worktree"]).resolve(strict=True)
+        if find_git_common(worktree) != sw.common.resolve():
+            raise SwarmError("Dispatch snapshot worktree is not in this repository.")
+        head = git("rev-parse", "HEAD", cwd=worktree)
+        if not re.fullmatch(r"[0-9a-f]{40}", head) or not re.fullmatch(r"[0-9a-f]{40}", t["base_sha"]):
+            raise SwarmError("Dispatch snapshot requires exact Git SHA-1 commits.")
+        stamp = sw.configuration_digest()
+        if not stamp or stamp != sw.config_stamp:
+            raise SwarmError("Dispatch snapshot requires unchanged explicit project configuration.")
+        return {
+            "version": 1, "authority": "none", "task": task_id, "owner": owner,
+            "epoch": epoch, "state": t["state"], "worktree": str(worktree),
+            "baseCommit": t["base_sha"], "headCommit": head,
+            "hivewireConfigSha256": stamp, "contractId": c["id"],
+            "hivewireTermsSha256": hashlib.sha256(c["terms"].encode("utf-8")).hexdigest(),
+            "deadline": json.loads(c["terms"])["deadline_at"],
+            "observedAt": iso(),
+        }
+
+
+def cmd_dispatch_snapshot(sw: Swarm, a) -> None:
+    if a.as_ != HUMAN:
+        raise SwarmError("Dispatch snapshots are an operator integration command; use --as human.")
+    print(json.dumps(dispatch_snapshot(sw, a.task, a.owner, a.expected_epoch)))
+
+
 def cmd_explain(sw: Swarm, a) -> None:
     t = sw.task(a.task)
     print(f"{t['id']} [{t['state']}], owner {t['assignee'] or 'none'}, epoch {t['epoch']}: {t['title']}")
@@ -7123,7 +7191,14 @@ def gate_commands(sw: Swarm) -> list[list[str]]:
     """[gates.windows], [gates.linux] or [gates.macos] commands replace [gates] commands on that OS."""
     g = sw.config["gates"]
     os_name = current_os()
-    return g.get(os_name, {}).get("commands", g["commands"])
+    commands = g.get(os_name, {}).get("commands", g["commands"])
+    # Static impact findings are never a substitute for executable acceptance tests.
+    # An intelligence-only configuration must not unlock merge/goal closure gates.
+    if not commands:
+        return []
+    if g["intelligence"]:
+        return [*commands, [sys.executable, str(HERE / "code_intelligence.py")]]
+    return commands
 
 
 def resolve_gate(argv: list[str], worktree: Path) -> list[str]:
@@ -7760,6 +7835,9 @@ def merge_locked(sw: Swarm, who: str, t: sqlite3.Row) -> str:
         with sw.tx():
             check_merge_attempt(sw, who, t)
         target_sha = git("rev-parse", f"refs/heads/{target}", cwd=sw.main_root)
+        # Pin impact review to the actual branch base. HEAD^ would miss earlier
+        # commits of a multi-commit task before squash integration.
+        env["SWARM_INTELLIGENCE_BASE"] = target_sha
         rb = run(["git", "rebase", target_sha], cwd=path, check=False, timeout=300)
         if rb.returncode != 0:
             conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=path, check=False)
@@ -9411,6 +9489,10 @@ def cmd_spawn(sw: Swarm, a) -> None:
     ad = sw.config["adapters"].get(a.kind)
     if not ad:
         raise SwarmError(f"No adapter {a.kind!r}; known: {', '.join(sw.config['adapters'])}.")
+    if a.kind == "jani" and a.unattended:
+        raise SwarmError("The experimental Jani adapter does not support unattended authority.")
+    if a.kind == "jani" and sw.config["swarm"]["coordinator"] != HUMAN:
+        raise SwarmError("The experimental Jani observer requires [swarm] coordinator = human.")
     if not shutil.which(ad["run"][0]):
         raise SwarmError(f"{ad['run'][0]} is not installed (`hivewire probe`).")
     if a.unattended and not sw.config["spawn"]["allow_unattended"]:
@@ -12556,6 +12638,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("task")
     sp = add("context", cmd_context, "previous and next: what your task builds on, and what waits on it")
     sp.add_argument("--task", default="")
+    sp = add("dispatch-snapshot", cmd_dispatch_snapshot, "observe a current assignment for an independent issuer")
+    sp.add_argument("task")
+    sp.add_argument("--owner", required=True)
+    sp.add_argument("--expected-epoch", required=True, type=int)
     sp = add("explain", cmd_explain, "assignment, contract, checkpoint and safe next action")
     sp.add_argument("task")
     sp = add("why", cmd_why, "the exact blocker and next action for one task")

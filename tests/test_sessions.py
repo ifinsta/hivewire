@@ -146,6 +146,8 @@ class SessionViews(HardeningCase):
             for name in ("gone", "recent", "owner"):
                 sw.update_agent(name, state="offline", offline_at=core.iso(), offline_reason="silent")
             sw.update_agent("gone", offline_at=long_ago)
+            # Timestamps have one-second resolution; ensure strictly positive age.
+            sw.update_agent("recent", offline_at=core.iso(core.utcnow() - core.timedelta(seconds=2)))
             sw.update_agent("owner", offline_at=long_ago, task="T1")
         # A recently silent agent may still resume, and an owner of unfinished work is never archived.
         self.assertIn("would archive 1 agent(s)", self.sw("agents", "--prune", "--dry-run"))

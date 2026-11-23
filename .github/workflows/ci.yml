@@ -40,6 +40,8 @@ jobs:
           python -m ruff check .
       - name: The manifest matches the skill files
         run: python scripts/make_manifest.py --check
+      - name: Pinpoint multi-repository intelligence regressions
+        run: python -m unittest discover -s tests -p 'test_intelligence_runtime.py' -v
       - name: Tests
         run: python scripts/validate_candidate.py --workers 2 --output candidate-validation
       - name: Retain exact-source test evidence

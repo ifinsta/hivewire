@@ -88,8 +88,9 @@ def main():
     sys.path.insert(0, str(ROOT / "tests"))
     ids = sorted(test.id() for test in flatten(unittest.defaultTestLoader.discover(str(ROOT / "tests"))))
     if len(ids) != len(set(ids)) or not ids:
-        repeated = sorted({value for value in ids if ids.count(value) > 1})
-        raise RuntimeError(f"Discovery must produce unique, nonempty test IDs: duplicates={repeated[:10]}, total={len(ids)}")
+        from collections import Counter
+        duplicates = [(name, count) for name, count in Counter(ids).items() if count > 1]
+        raise RuntimeError(f"Discovery must produce unique, nonempty test IDs: duplicates={duplicates[:20]}, total={len(ids)}")
     (output / "source-before.json").write_text(json.dumps(before, indent=2), encoding="utf-8")
 
     def run(index):

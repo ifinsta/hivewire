@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -142,12 +143,12 @@ class TerminalSupervision(HardeningCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX controlling PTY; Windows uses the inherited console")
     def test_ec328_exit_drain_preserves_all_buffered_output_across_short_reads(self):
-        import pty
-
-        payload = b"BEGIN-TERMINAL-TAIL" + b"x" * 5000 + b"END-TERMINAL-TAIL"
-        master, slave = pty.openpty()
+        # Use a pipe for the drain loop. A PTY can discard queued output when
+        # its last writer closes. The next test exercises an actual PTY.
+        payload = b"BEGIN-TERMINAL-TAIL" + b"x" * 400 + b"END-TERMINAL-TAIL"
+        reader, writer = os.pipe()
         bridge = core.TerminalBridge()
-        bridge.master = master
+        bridge.master = reader
         captured = bytearray()
         original_read = os.read
 
@@ -156,12 +157,9 @@ class TerminalSupervision(HardeningCase):
             return len(data)
 
         try:
-            pending = payload
-            while pending:
-                pending = pending[os.write(slave, pending):]
-            os.close(slave)
-            slave = None
-            # A PTY read may return fewer bytes than requested, even at process exit.
+            self.assertEqual(os.write(writer, payload), len(payload))
+            os.close(writer)
+            writer = None
             with mock.patch.object(bridge, "resize"), mock.patch.object(
                 core.os, "read", side_effect=lambda fd, size: original_read(fd, min(size, 127))
             ), mock.patch.object(core.os, "write", side_effect=forward):
@@ -170,9 +168,10 @@ class TerminalSupervision(HardeningCase):
             self.assertFalse(bridge.output_open)
             self.assertFalse(bridge.input_open)
         finally:
-            if slave is not None:
-                os.close(slave)
-            os.close(master)
+            if writer is not None:
+                os.close(writer)
+            os.close(reader)
+
 
     @unittest.skipIf(os.name == "nt", "POSIX controlling PTY; Windows uses the inherited console")
     def test_ec328_posix_terminal_drains_the_final_output_after_the_worker_exits(self):
@@ -227,12 +226,39 @@ class TerminalSupervision(HardeningCase):
         master, slave = pty.openpty()
         before = termios.tcgetattr(slave)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        caller = subprocess.Popen(self.command(), cwd=self.root, stdin=slave, stdout=slave, stderr=slave)
+        startup_errors = Path(self.tmp.name) / "terminal-startup.stderr"
+        with startup_errors.open("wb") as errors:
+            caller = subprocess.Popen(self.command(), cwd=self.root, stdin=slave, stdout=slave, stderr=errors)
         os.close(slave)
+        transcript = bytearray()
+
+        def wait_for_file(path: Path) -> None:
+            def read_until_ready() -> bool:
+                # A real terminal consumes the caller's output while the
+                # worker starts. Leaving the outer PTY unread can block it.
+                try:
+                    transcript.extend(os.read(master, 8192))
+                    del transcript[:-2000]
+                except BlockingIOError:
+                    pass
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        raise
+                return path.exists() or caller.poll() is not None
+
+            try:
+                self.wait_for(read_until_ready)
+                self.assertTrue(path.exists(), f"Terminal did not create {path.name}")
+            except AssertionError as exc:
+                stderr = startup_errors.read_text(encoding="utf-8", errors="replace")
+                details = core.redact_text(transcript.decode(errors="replace") + "\n" + stderr)
+                raise AssertionError(f"{exc}\nTerminal caller exit: {caller.poll()}\n{details[-4000:]}") from exc
+
         try:
-            self.wait_for(ready.exists)
+            os.set_blocking(master, False)
+            wait_for_file(ready)
             os.write(master, b"hello-terminal\n")
-            self.wait_for(result.exists)
+            wait_for_file(result)
             caller.wait(timeout=15)
             self.assertEqual(caller.returncode, 0)
             self.assertEqual(json.loads(result.read_text()), {"tty": True, "cols": 80, "line": "hello-terminal"})

@@ -3,15 +3,22 @@
   "files": {
     "SKILL.md": "fc2cb5bd83d0f6e356d61725555f2e013b0c22ca2f9206fc501d69aa233a30e2",
     "hivewire.py": "e43da4b53b040280fca68f37bcef1e8d22b8f94b61483aa14dc83fe8ae37594c",
-    "swarm_core.py": "604505e664f6ba36ad462440e3b511d10af30b038c9235207f6f41d59809cc67",
+    "swarm_core.py": "5edd39873dcb8c62142db89c6440a948cd63c5a9876948cb911cdd0073401988",
     "swarm_deputy.py": "18dbe1e554c8bfffab48d34170350e391d2cf84bd09933ce54e173cdf32a2b8b",
     "swarm_deadhand.py": "b72adcbd20df4e9f9266190e6aa97ee2e02aad8493e46aea0b5c6e5ada853a6e",
     "EDGE-CASES.md": "58ed5197804736671d0010b5e78807cc0411a1e5a141f7c673a4f4b5b0dd1d97",
     "BUS.md": "cec099ec8acd0bf6ea5908ad6218dac8f70eaaf96d4d5d6682a8ca5871e794fb",
     "BUS.schema.json": "df3707c5685ef90d30ff1d532975e014dbbc72ca2074033c2fa062072912ed98",
-    "swarm_web.py": "8ae64a78cd0ba0801fc805c0ebe04552fccd922cffdb42182dd89e44040350ad",
+    "swarm_web.py": "84ee87422b0374eeaa3d0c161081eb59dcd54740e28676740af990647171735f",
     "swarm_sessions.py": "f2f9cbb0103bfbf0bc198e6b10416329d52901b080af39b2fa947b2b502be140",
     "swarm_workspace.py": "ae0fda61cfbb72f99447f9247e177778ca5dc689ae67d65e649b6a2f7865e2be",
-    "swarm_fonts.css": "aa54f1b78f6e332e3bc8708dbcc046f12dd06861393a782a6d5da0a69157df77"
+    "swarm_fonts.css": "aa54f1b78f6e332e3bc8708dbcc046f12dd06861393a782a6d5da0a69157df77",
+    "code_intelligence.py": "5a39163dbe229362954ffb25ee3089e34269d8895d8ddb5cb52f53432d72142e",
+    "intelligence_graph.py": "ada438d9957e03ad850153c44bb26f2d7e085c1b7bd4b3b9e5e4353ae745739c",
+    "intelligence_execution.py": "247eeb1eb87a70fb3067207d6816921afba164932c1c4f88c5e7203dc4f6f436",
+    "intelligence_metrics.py": "6704b35aa68064f61d070852ed32a64068eafcf92c5e4c6f25a900b11a5b52a4",
+    "intelligence_mcp.py": "8a8ce9a5f55c14e08a167526af5a944aaef65972d344e404b7056afbe6248532",
+    "hivewire_intelligence.py": "103c3b69db488420f12518df08ae6826268b5b32be9554cdf520cc44fb04d028",
+    "intelligence_verify.py": "3f4128728da92524b430680a4c34b80646056be39c8f9d8ad2c4a3b5cd3c5eed"
   }
 }
