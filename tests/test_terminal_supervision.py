@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -229,14 +230,35 @@ class TerminalSupervision(HardeningCase):
         with startup_errors.open("wb") as errors:
             caller = subprocess.Popen(self.command(), cwd=self.root, stdin=slave, stdout=slave, stderr=errors)
         os.close(slave)
-        try:
+        transcript = bytearray()
+
+        def wait_for_file(path: Path) -> None:
+            def read_until_ready() -> bool:
+                # A real terminal consumes the caller's output while the
+                # worker starts. Leaving the outer PTY unread can block it.
+                try:
+                    transcript.extend(os.read(master, 8192))
+                    del transcript[:-2000]
+                except BlockingIOError:
+                    pass
+                except OSError as exc:
+                    if exc.errno != errno.EIO:
+                        raise
+                return path.exists() or caller.poll() is not None
+
             try:
-                self.wait_for(ready.exists)
+                self.wait_for(read_until_ready)
+                self.assertTrue(path.exists(), f"Terminal did not create {path.name}")
             except AssertionError as exc:
-                details = startup_errors.read_text(encoding="utf-8", errors="replace")[-2000:]
-                raise AssertionError(f"{exc}\nTerminal caller exit: {caller.poll()}\n{details}") from exc
+                stderr = startup_errors.read_text(encoding="utf-8", errors="replace")
+                details = core.redact_text(transcript.decode(errors="replace") + "\n" + stderr)
+                raise AssertionError(f"{exc}\nTerminal caller exit: {caller.poll()}\n{details[-4000:]}") from exc
+
+        try:
+            os.set_blocking(master, False)
+            wait_for_file(ready)
             os.write(master, b"hello-terminal\n")
-            self.wait_for(result.exists)
+            wait_for_file(result)
             caller.wait(timeout=15)
             self.assertEqual(caller.returncode, 0)
             self.assertEqual(json.loads(result.read_text()), {"tty": True, "cols": 80, "line": "hello-terminal"})
