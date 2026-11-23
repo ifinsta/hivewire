@@ -1,6 +1,6 @@
 import json
 
-from test_hardening import HardeningCase, core
+from test_hardening import HardeningCase
 
 
 class DispatchSnapshot(HardeningCase):
