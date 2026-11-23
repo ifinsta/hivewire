@@ -14,6 +14,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -61,6 +62,14 @@ class WebCase(HardeningCase):
         status, _, body = self.request(path)
         self.assertEqual(status, 200, body)
         return json.loads(body)
+
+
+class Bind(unittest.TestCase):
+    def test_loopback_binding_does_not_query_reverse_dns(self):
+        with mock.patch.object(swarm_web.socket, "getfqdn", side_effect=AssertionError("reverse DNS")):
+            with swarm_web.Server(("127.0.0.1", 0), swarm_web.Handler) as server:
+                self.assertEqual(server.server_name, "127.0.0.1")
+                self.assertEqual(server.server_port, server.server_address[1])
 
 
 class Guards(WebCase):

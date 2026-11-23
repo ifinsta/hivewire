@@ -36,6 +36,7 @@ import webbrowser
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_PORT = 8787
@@ -1198,7 +1199,11 @@ class Server(ThreadingHTTPServer):
     def server_bind(self) -> None:
         if os.name == "nt":
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        super().server_bind()
+        # HTTPServer.server_bind resolves the address via reverse DNS. The
+        # dashboard only binds to a numeric loopback address.
+        TCPServer.server_bind(self)
+        self.server_name = str(self.server_address[0])
+        self.server_port = self.server_address[1]
 
 
 # ---------------------------------------------------------------------------------------------- shared state

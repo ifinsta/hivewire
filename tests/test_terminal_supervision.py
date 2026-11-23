@@ -142,12 +142,12 @@ class TerminalSupervision(HardeningCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX controlling PTY; Windows uses the inherited console")
     def test_ec328_exit_drain_preserves_all_buffered_output_across_short_reads(self):
-        import pty
-
-        payload = b"BEGIN-TERMINAL-TAIL" + b"x" * 5000 + b"END-TERMINAL-TAIL"
-        master, slave = pty.openpty()
+        # Use a pipe for the drain loop. A PTY can discard queued output when
+        # its last writer closes. The next test exercises an actual PTY.
+        payload = b"BEGIN-TERMINAL-TAIL" + b"x" * 400 + b"END-TERMINAL-TAIL"
+        reader, writer = os.pipe()
         bridge = core.TerminalBridge()
-        bridge.master = master
+        bridge.master = reader
         captured = bytearray()
         original_read = os.read
 
@@ -156,30 +156,21 @@ class TerminalSupervision(HardeningCase):
             return len(data)
 
         try:
-            # macOS may fill the PTY buffer before the full payload fits.
-            # Queue only what fits without blocking before the reader starts.
-            os.set_blocking(slave, False)
-            queued = 0
-            while queued < len(payload):
-                try:
-                    queued += os.write(slave, payload[queued:])
-                except BlockingIOError:
-                    break
-            self.assertGreater(queued, 127, "exercise more than one short read")
-            os.close(slave)
-            slave = None
-            # A PTY read may return fewer bytes than requested, even at process exit.
+            self.assertEqual(os.write(writer, payload), len(payload))
+            os.close(writer)
+            writer = None
             with mock.patch.object(bridge, "resize"), mock.patch.object(
                 core.os, "read", side_effect=lambda fd, size: original_read(fd, min(size, 127))
             ), mock.patch.object(core.os, "write", side_effect=forward):
                 bridge.drain()
-            self.assertEqual(captured, payload[:queued])
+            self.assertEqual(captured, payload)
             self.assertFalse(bridge.output_open)
             self.assertFalse(bridge.input_open)
         finally:
-            if slave is not None:
-                os.close(slave)
-            os.close(master)
+            if writer is not None:
+                os.close(writer)
+            os.close(reader)
+
 
     @unittest.skipIf(os.name == "nt", "POSIX controlling PTY; Windows uses the inherited console")
     def test_ec328_posix_terminal_drains_the_final_output_after_the_worker_exits(self):
@@ -234,10 +225,16 @@ class TerminalSupervision(HardeningCase):
         master, slave = pty.openpty()
         before = termios.tcgetattr(slave)
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        caller = subprocess.Popen(self.command(), cwd=self.root, stdin=slave, stdout=slave, stderr=slave)
+        startup_errors = Path(self.tmp.name) / "terminal-startup.stderr"
+        with startup_errors.open("wb") as errors:
+            caller = subprocess.Popen(self.command(), cwd=self.root, stdin=slave, stdout=slave, stderr=errors)
         os.close(slave)
         try:
-            self.wait_for(ready.exists)
+            try:
+                self.wait_for(ready.exists)
+            except AssertionError as exc:
+                details = startup_errors.read_text(encoding="utf-8", errors="replace")[-2000:]
+                raise AssertionError(f"{exc}\nTerminal caller exit: {caller.poll()}\n{details}") from exc
             os.write(master, b"hello-terminal\n")
             self.wait_for(result.exists)
             caller.wait(timeout=15)
