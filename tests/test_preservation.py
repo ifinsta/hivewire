@@ -234,13 +234,15 @@ class ActiveWork(ProcessCase):
 class PolicySnapshot(HardeningCase):
     def test_ec253_a_transient_config_read_cannot_bind_different_policy_to_the_original_digest(self):
         config = self.root / ".agents" / "swarm" / "config.toml"
+        config = config.resolve()
         original = config.read_bytes()
         transient = original.replace(b"max_agents = 5", b"max_agents = 4")
+        self.assertNotEqual(transient, original)
         real_open = Path.open
         reads = []
 
         def opened(path, mode="r", *args, **kwargs):
-            if path == config and mode in ("r", "rb"):
+            if mode in ("r", "rb") and path.resolve() == config:
                 reads.append(mode)
                 # The source changes A -> B -> A during parsing. Both outside
                 # digests see A; the parse sees B. File statistics cannot prove
@@ -253,6 +255,7 @@ class PolicySnapshot(HardeningCase):
             with self.assertRaisesRegex(core.SwarmError, "configuration changed while loading"):
                 with self.board():
                     pass
+        self.assertEqual(len(reads), 2)
         self.assertEqual(config.read_bytes(), original)
         self.assertFalse((self.root / ".git" / "swarm" / "config.cache.json").exists())
         with self.board() as sw:
