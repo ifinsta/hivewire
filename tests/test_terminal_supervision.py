@@ -156,9 +156,16 @@ class TerminalSupervision(HardeningCase):
             return len(data)
 
         try:
-            pending = payload
-            while pending:
-                pending = pending[os.write(slave, pending):]
+            # macOS may fill the PTY buffer before the full payload fits.
+            # Queue only what fits without blocking before the reader starts.
+            os.set_blocking(slave, False)
+            queued = 0
+            while queued < len(payload):
+                try:
+                    queued += os.write(slave, payload[queued:])
+                except BlockingIOError:
+                    break
+            self.assertGreater(queued, 127, "exercise more than one short read")
             os.close(slave)
             slave = None
             # A PTY read may return fewer bytes than requested, even at process exit.
@@ -166,7 +173,7 @@ class TerminalSupervision(HardeningCase):
                 core.os, "read", side_effect=lambda fd, size: original_read(fd, min(size, 127))
             ), mock.patch.object(core.os, "write", side_effect=forward):
                 bridge.drain()
-            self.assertEqual(captured, payload)
+            self.assertEqual(captured, payload[:queued])
             self.assertFalse(bridge.output_open)
             self.assertFalse(bridge.input_open)
         finally:

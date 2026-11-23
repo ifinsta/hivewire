@@ -432,7 +432,18 @@ class Command(HardeningCase):
         home = tempfile.TemporaryDirectory()
         env = {**os.environ, "SWARM_WEB_HOME": home.name}
         proc = subprocess.Popen(
-            [sys.executable, str(fixtures.SWARM), "dashboard", "--web", "--no-open", "--observe", "--port", "0"],
+            [
+                sys.executable,
+                "-c",
+                "import faulthandler, runpy, sys; "
+                "from pathlib import Path; "
+                "faulthandler.dump_traceback_later(20); "
+                "sys.argv.pop(0); "
+                "sys.path.insert(0, str(Path(sys.argv[0]).parent)); "
+                "runpy.run_path(sys.argv[0], run_name='__main__')",
+                str(fixtures.SWARM),
+                "dashboard", "--web", "--no-open", "--observe", "--port", "0",
+            ],
             cwd=self.root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -443,7 +454,12 @@ class Command(HardeningCase):
         lines: queue.Queue = queue.Queue()
         threading.Thread(target=lambda: lines.put(proc.stdout.readline()), daemon=True).start()
         try:
-            first = lines.get(timeout=30)
+            try:
+                first = lines.get(timeout=30)
+            except queue.Empty:
+                proc.kill()
+                proc.wait(timeout=10)
+                self.fail(f"Dashboard never printed its startup link. Child stderr:\n{proc.stderr.read()}")
             self.assertIn("Hivewire dashboard: http://127.0.0.1:", first, first + (proc.stderr.read() if proc.poll() else ""))
             url = urlparse(first.split(": ", 1)[1].strip())
             conn = http.client.HTTPConnection(url.hostname, url.port, timeout=10)
