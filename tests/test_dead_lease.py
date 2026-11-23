@@ -59,7 +59,11 @@ class DeadMergeLease(HardeningCase):
     def test_ec382_only_proof_counts(self):
         me = core.process_identity(core.os.getpid())
         self.assertFalse(core.proven_gone(me))
-        self.assertTrue(core.proven_gone({**me, "start": "1"}), "a different process under the same pid")
+        different = {**me, "start": "previous-process-start"}
+        if me["start"] is not None:
+            self.assertTrue(core.proven_gone(different), "a reused PID with an observed start time")
+        with mock.patch.object(core, "process_start", return_value="current-process-start"):
+            self.assertTrue(core.proven_gone(different), "a different process under the same pid")
         self.assertFalse(core.proven_gone({**dead_identity(), "ns": "another-host/boot"}), "another namespace")
         with mock.patch.object(core, "process_start", return_value=None):  # access denied or unknown
             self.assertFalse(core.proven_gone({**me, "start": "1"}))
