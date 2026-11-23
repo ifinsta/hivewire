@@ -5291,6 +5291,61 @@ def cmd_interrupt(sw: Swarm, a) -> None:
         raise deputy.DeputyError(str(exc))
 
 
+def dispatch_snapshot(sw: Swarm, task_id: str, owner: str, epoch: int) -> dict:
+    """Local coordination observation for an independently authenticated issuer.
+
+    No authority, identity proof or launch token is created. The issuer must
+    bind this snapshot to its own tenant/workspace/policy, verify the live
+    ownership epoch again before effects, and hold its own protected lease.
+    """
+    import hashlib
+
+    with sw.tx():
+        t = sw.task(task_id)
+        c = current_contract(sw, task_id)
+        agent = sw.agent(owner)
+        if sw.config["swarm"]["coordinator"] != HUMAN or sw.paused():
+            raise SwarmError("Dispatch snapshot requires an unpaused human-coordinated board.")
+        if (t["removed"] or t["state"] not in ("claimed", "planning", "in_progress")
+                or t["assignee"] != owner or t["epoch"] != epoch or epoch <= 0
+                or not agent or agent["task"] != task_id or agent["state"] in ("offline", "left")
+                or agent["reviewing"]):
+            raise SwarmError("Dispatch snapshot ownership or state mismatch.")
+        if (not c or c["state"] != "active" or c["owner"] != owner or c["epoch"] != epoch
+                or c["checkpoint_due"] or t["budget_flagged"] or task_blockers(sw, t)):
+            raise SwarmError("Dispatch snapshot requires an active, unblocked contract.")
+        interrupt_permission(sw, t)
+        if sw.db.execute("SELECT 1 FROM questions WHERE task=? AND critical=1 AND answer IS NULL AND waived=0",
+                         (task_id,)).fetchone():
+            raise SwarmError("Dispatch snapshot blocked by a critical question.")
+        if not t["worktree"] or not t["base_sha"]:
+            raise SwarmError("Dispatch snapshot requires an assigned worktree.")
+        worktree = Path(t["worktree"]).resolve(strict=True)
+        if find_git_common(worktree) != sw.common.resolve():
+            raise SwarmError("Dispatch snapshot worktree is not in this repository.")
+        head = git("rev-parse", "HEAD", cwd=worktree)
+        if not re.fullmatch(r"[0-9a-f]{40}", head) or not re.fullmatch(r"[0-9a-f]{40}", t["base_sha"]):
+            raise SwarmError("Dispatch snapshot requires exact Git SHA-1 commits.")
+        stamp = sw.configuration_digest()
+        if not stamp or stamp != sw.config_stamp:
+            raise SwarmError("Dispatch snapshot requires unchanged explicit project configuration.")
+        return {
+            "version": 1, "authority": "none", "task": task_id, "owner": owner,
+            "epoch": epoch, "state": t["state"], "worktree": str(worktree),
+            "baseCommit": t["base_sha"], "headCommit": head,
+            "hivewireConfigSha256": stamp, "contractId": c["id"],
+            "hivewireTermsSha256": hashlib.sha256(c["terms"].encode("utf-8")).hexdigest(),
+            "deadline": json.loads(c["terms"])["deadline_at"],
+            "observedAt": iso(),
+        }
+
+
+def cmd_dispatch_snapshot(sw: Swarm, a) -> None:
+    if a.as_ != HUMAN:
+        raise SwarmError("Dispatch snapshots are an operator integration command; use --as human.")
+    print(json.dumps(dispatch_snapshot(sw, a.task, a.owner, a.expected_epoch)))
+
+
 def cmd_explain(sw: Swarm, a) -> None:
     t = sw.task(a.task)
     print(f"{t['id']} [{t['state']}], owner {t['assignee'] or 'none'}, epoch {t['epoch']}: {t['title']}")
@@ -12583,6 +12638,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("task")
     sp = add("context", cmd_context, "previous and next: what your task builds on, and what waits on it")
     sp.add_argument("--task", default="")
+    sp = add("dispatch-snapshot", cmd_dispatch_snapshot, "observe a current assignment for an independent issuer")
+    sp.add_argument("task")
+    sp.add_argument("--owner", required=True)
+    sp.add_argument("--expected-epoch", required=True, type=int)
     sp = add("explain", cmd_explain, "assignment, contract, checkpoint and safe next action")
     sp.add_argument("task")
     sp = add("why", cmd_why, "the exact blocker and next action for one task")
