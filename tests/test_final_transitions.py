@@ -26,7 +26,21 @@ class FinalTransitions(HardeningCase):
         db = self.db()
         try:
             tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-            return {table: sorted([tuple(r) for r in db.execute(f'SELECT * FROM "{table}"')], key=repr) for table in tables}
+            snapshot = {}
+            for table in tables:
+                cursor = db.execute(f'SELECT * FROM "{table}"')
+                # The command preflight can refresh attention liveness across a
+                # minute boundary, independently of the transition being killed.
+                volatile = (
+                    {index for index, column in enumerate(cursor.description)
+                     if column[0] in ("last_seen_at", "last_scan_at")}
+                    if table == "attention_items" else set()
+                )
+                snapshot[table] = sorted(
+                    [tuple(value for index, value in enumerate(row) if index not in volatile) for row in cursor],
+                    key=repr,
+                )
+            return snapshot
         finally:
             db.close()
 
